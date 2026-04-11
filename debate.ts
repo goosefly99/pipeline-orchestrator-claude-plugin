@@ -1,6 +1,9 @@
 // pipeline-mcp/debate.ts
 
 import { randomBytes } from 'node:crypto'
+import { writeFileSync, mkdirSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
+import { getArtifactDir } from './storage.ts'
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -382,4 +385,65 @@ export function generateSynthesisPrompt(state: DebateState): string {
     '',
     'Be rigorous: accept changes that are well-evidenced and improve the artifact. Reject changes that are speculative, contradicted by evidence, or outside scope. Flag genuinely unresolved issues as open questions.',
   ].join('\n')
+}
+
+// ── Per-run debate write helpers (Feature C) ────────────────────
+//
+// Route debate transcript persistence through `state.run_data_dir`
+// when set, falling back to `{legacyBaseDir}/debates/` when a run
+// predates Feature-A parameterization. Unlike collections/overviews,
+// debate transcripts preserve the throw-on-collision semantics of
+// `storage.ts::storeArtifact` — the AGENTS.md "Artifact storage
+// safety" rule requires that existing transcripts cannot be silently
+// overwritten. Callers must pass `force=true` explicitly to replace
+// an existing transcript, matching the generic artifact store.
+
+/**
+ * Resolve the on-disk directory for debate transcripts.
+ *
+ * - When `runDataDir` is a non-empty string, returns
+ *   `getArtifactDir(runDataDir, 'debates')`.
+ * - Otherwise falls back to `{legacyBaseDir}/debates`.
+ */
+export function resolveDebatesDir(
+  runDataDir: string | undefined,
+  legacyBaseDir: string,
+): string {
+  if (runDataDir) {
+    return getArtifactDir(runDataDir, 'debates')
+  }
+  return join(legacyBaseDir, 'debates')
+}
+
+/**
+ * Persist a debate transcript under the run's data directory.
+ *
+ * When `runDataDir` is set, writes to `{runDataDir}/debates/{fileName}`.
+ * Otherwise falls back to `{legacyBaseDir}/debates/{fileName}` so
+ * pre-Feature-C runs continue to use the top-level layout.
+ *
+ * Collision semantics mirror `storage.ts::storeArtifact` exactly:
+ * if the target file already exists and `force !== true`, an Error
+ * is thrown. Pass `force=true` to overwrite. This differs from
+ * `persistRawCollection` / `persistOverview`, which have overwrite-ok
+ * semantics — debate transcripts are immutable once saved per the
+ * artifact storage safety rule.
+ *
+ * @returns the absolute path written.
+ */
+export function persistDebate(
+  runDataDir: string | undefined,
+  legacyBaseDir: string,
+  transcript: unknown,
+  fileName: string,
+  force?: boolean,
+): string {
+  const dir = resolveDebatesDir(runDataDir, legacyBaseDir)
+  mkdirSync(dir, { recursive: true })
+  const filePath = join(dir, fileName)
+  if (existsSync(filePath) && force !== true) {
+    throw new Error(`Debate transcript already exists at "${filePath}". Pass force=true to overwrite.`)
+  }
+  writeFileSync(filePath, JSON.stringify(transcript, null, 2), 'utf-8')
+  return filePath
 }

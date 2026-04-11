@@ -33,6 +33,19 @@ export interface SaveDebateContext extends DebateContext {
   getActiveRunDir(): string
   addArtifact(state: RunState, ref: ArtifactRef, stateDir: string): RunState
   setActiveRun(state: RunState): void
+
+  /**
+   * Per-run debate transcript persistence (Feature C). When present,
+   * takes precedence over `storeArtifact` in `handleSaveDebate`. Server.ts
+   * wires this to `persistDebate(runDataDir, legacyBaseDir, transcript,
+   * fileName, force)` so callers get automatic run-scoped routing without
+   * plumbing context through the handler.
+   *
+   * Optional so older test fixtures that mock the context without this
+   * field continue to fall back to `storeArtifact`. Throws on pre-existing
+   * files unless `force === true`, matching `storage.ts::storeArtifact`.
+   */
+  persistDebate?(transcript: unknown, fileName: string, force?: boolean): string
 }
 
 // Re-export HandlerResponse for backward compatibility
@@ -177,11 +190,21 @@ export function handleSaveDebate(args: Record<string, unknown>, ctx: SaveDebateC
 
   const activeRun = ctx.getActiveRun()
   const activeRunDir = ctx.getActiveRunDir()
-  const baseDir = activeRun
-    ? ctx.baseDirFromRunDir(activeRunDir)
-    : join(ctx.getProjectRoot(), ctx.getConfigStorageBaseDir())
-  const sc = ctx.getStorageConfig(baseDir)
-  const storedPath = ctx.storeArtifact(sc, 'debates', fileName, transcript)
+
+  // Feature C: prefer persistDebate (run-scoped) when the context supplies
+  // it; fall back to the legacy storeArtifact path so older test fixtures
+  // and any callers without the new wiring keep working. Both branches
+  // preserve the throw-on-collision-unless-force semantics of storeArtifact.
+  let storedPath: string
+  if (ctx.persistDebate) {
+    storedPath = ctx.persistDebate(transcript, fileName)
+  } else {
+    const baseDir = activeRun
+      ? ctx.baseDirFromRunDir(activeRunDir)
+      : join(ctx.getProjectRoot(), ctx.getConfigStorageBaseDir())
+    const sc = ctx.getStorageConfig(baseDir)
+    storedPath = ctx.storeArtifact(sc, 'debates', fileName, transcript)
+  }
 
   if (activeRun) {
     const updated = ctx.addArtifact(activeRun, {

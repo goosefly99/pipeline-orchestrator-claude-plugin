@@ -25,6 +25,7 @@ import { runHooks, runPrePipelineInitHooks } from './hooks.ts'
 import { PipelineError } from './types.ts'
 import type { RunState, StorageConfig, QualityGate, HookConfig } from './types.ts'
 import type { DebateState } from './debate.ts'
+import { persistDebate as persistDebateToDisk } from './debate.ts'
 import {
   handleInitDebate as initDebateHandler,
   handleSubmitArgument as submitArgumentHandler,
@@ -189,6 +190,21 @@ const saveDebateCtx: SaveDebateContext = {
   getActiveRunDir: () => activeRunDir,
   addArtifact: (...a) => addArtifact(...a),
   setActiveRun: (s) => { activeRun = s },
+  // Feature C: route debate transcript writes through run_data_dir when set,
+  // with a legacy {base_dir}/debates fallback for runs that predate Feature-A.
+  // Throws on collision unless force=true, matching storeArtifact semantics.
+  persistDebate: (transcript: unknown, fileName: string, force?: boolean): string => {
+    const legacyBaseDir = activeRun
+      ? baseDirFromRunDir(activeRunDir)
+      : resolve(getProjectRoot(), getConfig().storage.base_dir)
+    return persistDebateToDisk(
+      activeRun?.run_data_dir,
+      legacyBaseDir,
+      transcript,
+      fileName,
+      force,
+    )
+  },
 }
 
 const ccCtx = {

@@ -1,7 +1,10 @@
 // pipeline-mcp/tests/debate.test.ts
 
-import { describe, it } from 'node:test'
+import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import { join, isAbsolute } from 'node:path'
+import { tmpdir } from 'node:os'
 import {
   initDebate,
   submitArgument,
@@ -9,6 +12,8 @@ import {
   generateAgentPrompts,
   generateSynthesisPrompt,
   resolveProfile,
+  resolveDebatesDir,
+  persistDebate,
   FINANCE_PROFILE,
   SOFTWARE_PROFILE,
   RESEARCH_PROFILE,
@@ -690,5 +695,192 @@ describe('handleInitDebate', () => {
     assert.equal(response.input_id, 'ov-handler-check')
     assert.ok(Array.isArray(response.agents))
     assert.equal(response.agents.length, 4)
+  })
+})
+
+// ── Per-run debate write helpers (Feature C) ──────────────────
+
+describe('resolveDebatesDir', () => {
+  it('routes to runDataDir/debates when runDataDir is set', () => {
+    const runDataDir = '/tmp/pipeline-test/runs/my-run-2026-04-10'
+    const dir = resolveDebatesDir(runDataDir, '/tmp/pipeline-test/legacy')
+    assert.equal(dir, join(runDataDir, 'debates'))
+  })
+
+  it('falls back to legacyBaseDir/debates when runDataDir is undefined', () => {
+    const legacyBaseDir = '/tmp/pipeline-test/legacy'
+    const dir = resolveDebatesDir(undefined, legacyBaseDir)
+    assert.equal(dir, join(legacyBaseDir, 'debates'))
+  })
+
+  it('treats empty-string runDataDir as absent (falsy) and falls back', () => {
+    const legacyBaseDir = '/tmp/pipeline-test/legacy'
+    const dir = resolveDebatesDir('', legacyBaseDir)
+    assert.equal(dir, join(legacyBaseDir, 'debates'))
+  })
+})
+
+describe('persistDebate', () => {
+  let tempDir: string
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'pipeline-debate-persist-'))
+  })
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true })
+  })
+
+  it('writes under runDataDir/debates when runDataDir is set', () => {
+    const runDataDir = join(tempDir, 'runs', 'persist-debate-a')
+    const transcript = { transcript_id: 'dt-abc12345', input_type: 'design-spec', input_id: 'spec-x' }
+
+    const writtenPath = persistDebate(
+      runDataDir,
+      join(tempDir, 'legacy'),
+      transcript,
+      'dt-abc12345.json',
+    )
+
+    const expected = join(runDataDir, 'debates', 'dt-abc12345.json')
+    assert.equal(writtenPath, expected)
+    assert.ok(existsSync(expected), `expected file at ${expected}`)
+    const parsed = JSON.parse(readFileSync(expected, 'utf-8')) as Record<string, unknown>
+    assert.equal(parsed.transcript_id, 'dt-abc12345')
+    assert.equal(parsed.input_type, 'design-spec')
+    assert.equal(parsed.input_id, 'spec-x')
+  })
+
+  it('falls back to legacyBaseDir/debates when runDataDir is absent', () => {
+    const legacyBaseDir = join(tempDir, 'legacy-base-debates')
+    const transcript = { transcript_id: 'dt-legacy01', input_type: 'knowledge-overview', input_id: 'ov-y' }
+
+    const writtenPath = persistDebate(
+      undefined,
+      legacyBaseDir,
+      transcript,
+      'dt-legacy01.json',
+    )
+
+    const expected = join(legacyBaseDir, 'debates', 'dt-legacy01.json')
+    assert.equal(writtenPath, expected)
+    assert.ok(existsSync(expected), `expected file at ${expected}`)
+    const parsed = JSON.parse(readFileSync(expected, 'utf-8')) as Record<string, unknown>
+    assert.equal(parsed.transcript_id, 'dt-legacy01')
+  })
+
+  it('falls back to legacyBaseDir/debates when runDataDir is empty string', () => {
+    const legacyBaseDir = join(tempDir, 'legacy-base-empty-rdd')
+    const transcript = { transcript_id: 'dt-empty01' }
+
+    const writtenPath = persistDebate('', legacyBaseDir, transcript, 'dt-empty01.json')
+
+    const expected = join(legacyBaseDir, 'debates', 'dt-empty01.json')
+    assert.equal(writtenPath, expected)
+    assert.ok(existsSync(expected))
+  })
+
+  it('creates the target directory tree if it does not exist', () => {
+    const runDataDir = join(tempDir, 'runs', 'deep', 'nested', 'debate-target')
+    const transcript = { transcript_id: 'dt-deep0001' }
+
+    persistDebate(runDataDir, tempDir, transcript, 'dt-deep0001.json')
+
+    const dir = join(runDataDir, 'debates')
+    assert.ok(existsSync(dir), `expected mkdir to create ${dir}`)
+  })
+
+  it('returns an absolute path', () => {
+    const runDataDir = join(tempDir, 'runs', 'abs-check')
+    const transcript = { transcript_id: 'dt-abs00001' }
+
+    const writtenPath = persistDebate(runDataDir, tempDir, transcript, 'dt-abs00001.json')
+
+    // join() of an absolute tempDir must produce an absolute result.
+    assert.ok(isAbsolute(writtenPath), `expected absolute path, got ${writtenPath}`)
+  })
+
+  it('throws when the target file already exists and force is falsy', () => {
+    const runDataDir = join(tempDir, 'runs', 'collision-test')
+    const first = { transcript_id: 'dt-collide1', version: 1 }
+    const second = { transcript_id: 'dt-collide1', version: 2 }
+
+    const firstPath = persistDebate(runDataDir, tempDir, first, 'dt-collide1.json')
+    assert.ok(existsSync(firstPath))
+
+    assert.throws(
+      () => persistDebate(runDataDir, tempDir, second, 'dt-collide1.json'),
+      /Debate transcript already exists at .*dt-collide1\.json.*Pass force=true to overwrite/,
+    )
+
+    // First write must remain untouched.
+    const parsed = JSON.parse(readFileSync(firstPath, 'utf-8')) as Record<string, unknown>
+    assert.equal(parsed.version, 1, 'first write must not be overwritten when force is absent')
+  })
+
+  it('throws when the target file already exists and force is explicitly false', () => {
+    const runDataDir = join(tempDir, 'runs', 'collision-force-false')
+    const first = { transcript_id: 'dt-forcef01', version: 1 }
+    const second = { transcript_id: 'dt-forcef01', version: 2 }
+
+    persistDebate(runDataDir, tempDir, first, 'dt-forcef01.json', false)
+
+    assert.throws(
+      () => persistDebate(runDataDir, tempDir, second, 'dt-forcef01.json', false),
+      /Debate transcript already exists/,
+    )
+  })
+
+  it('overwrites an existing file when force=true', () => {
+    const runDataDir = join(tempDir, 'runs', 'force-overwrite')
+    const first = { transcript_id: 'dt-force001', version: 1 }
+    const second = { transcript_id: 'dt-force001', version: 2 }
+
+    const path1 = persistDebate(runDataDir, tempDir, first, 'dt-force001.json')
+    const path2 = persistDebate(runDataDir, tempDir, second, 'dt-force001.json', true)
+
+    assert.equal(path1, path2)
+    const parsed = JSON.parse(readFileSync(path2, 'utf-8')) as Record<string, unknown>
+    assert.equal(parsed.version, 2, 'force=true should overwrite the existing file')
+  })
+
+  it('sibling debates with different filenames in the same runDataDir both persist', () => {
+    const runDataDir = join(tempDir, 'runs', 'siblings')
+    const first = { transcript_id: 'dt-sib00001', input_id: 'a' }
+    const second = { transcript_id: 'dt-sib00002', input_id: 'b' }
+
+    const firstPath = persistDebate(runDataDir, tempDir, first, 'dt-sib00001.json')
+    const secondPath = persistDebate(runDataDir, tempDir, second, 'dt-sib00002.json')
+
+    assert.equal(firstPath, join(runDataDir, 'debates', 'dt-sib00001.json'))
+    assert.equal(secondPath, join(runDataDir, 'debates', 'dt-sib00002.json'))
+    assert.ok(existsSync(firstPath))
+    assert.ok(existsSync(secondPath))
+
+    // Both files must be independently readable.
+    const parsed1 = JSON.parse(readFileSync(firstPath, 'utf-8')) as Record<string, unknown>
+    const parsed2 = JSON.parse(readFileSync(secondPath, 'utf-8')) as Record<string, unknown>
+    assert.equal(parsed1.input_id, 'a')
+    assert.equal(parsed2.input_id, 'b')
+  })
+
+  it('JSON content round-trips via readFileSync', () => {
+    const runDataDir = join(tempDir, 'runs', 'roundtrip')
+    const transcript = {
+      transcript_id: 'dt-round001',
+      input_type: 'knowledge-overview',
+      input_id: 'ov-rt',
+      input_version: '1.0.0',
+      output_version: '1.1.0',
+      rounds: [
+        { round: 1, type: 'divergent', agents: [{ role: 'advocate', position: 'p', confidence: 0.9 }] },
+      ],
+      synthesis: { changes_accepted: ['a'], changes_rejected: [] },
+    }
+
+    const writtenPath = persistDebate(runDataDir, tempDir, transcript, 'dt-round001.json')
+    const roundTripped = JSON.parse(readFileSync(writtenPath, 'utf-8')) as typeof transcript
+
+    assert.deepEqual(roundTripped, transcript)
   })
 })
