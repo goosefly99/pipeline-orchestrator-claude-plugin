@@ -8,7 +8,10 @@ import {
   computeRecommendedAction, computeRunWarnings, STALE_PHASE_THRESHOLD_MS, atomicRename,
   validateRunStateIntegrity, recoverRun,
   getCompletedPhases, getSkippedPhases, getInProgressPhases, getArtifactTypes,
+  resolveRunWriteDir,
 } from '../run-state.ts'
+import { getRunDataDir, sanitizeRunName, sanitizeRunTimestamp } from '../storage.ts'
+import type { RunState } from '../types.ts'
 import { PipelineError } from '../types.ts'
 
 let tempDir: string
@@ -895,5 +898,142 @@ describe('getArtifactTypes', () => {
     state = addArtifact(state, { type: 'raw-collection', path: 'a1.json', phase: 'a', created_at: new Date().toISOString() }, tempDir)
     state = addArtifact(state, { type: 'raw-collection', path: 'a2.json', phase: 'a', created_at: new Date().toISOString() }, tempDir)
     assert.deepEqual(getArtifactTypes(state), ['raw-collection', 'raw-collection'])
+  })
+})
+
+// ── Feature C step C8: run-state.json write location ────────
+//
+// When a run has run_parameters with run_name + run_directory_timestamp,
+// initRun computes state.run_data_dir and subsequent persist() calls must
+// route run-state.json into that per-run directory instead of the legacy
+// stateDir. Legacy runs (no run_parameters) continue to write to stateDir.
+
+describe('Feature C step C8 — run-state.json write location', () => {
+  it('writes run-state.json to run_data_dir when run_parameters populated', () => {
+    // Layout: <tempDir>/pipeline_mcp_data/runs/legacy-runid/
+    // → baseDir = dirname(dirname(stateDir)) = <tempDir>/pipeline_mcp_data
+    const baseDir = join(tempDir, 'pipeline_mcp_data')
+    const stateDir = join(baseDir, 'runs', 'legacy-runid')
+
+    const state = initRun('legacy-runid', 'v1', ['phase-a'], stateDir, {
+      run_name: 'c8-write-test',
+      run_directory_timestamp: '2026-04-10T12:00:00Z',
+      phase_model: 'test-model',
+    })
+
+    // run_data_dir was computed and assigned on the state
+    assert.ok(state.run_data_dir, 'run_data_dir should be defined')
+    const expectedRunDir = getRunDataDir(baseDir, 'c8-write-test', '2026-04-10T12:00:00Z')
+    assert.equal(state.run_data_dir, expectedRunDir)
+
+    // The sanitized dir name we expect on disk
+    const sanitizedName = sanitizeRunName('c8-write-test')
+    const sanitizedTs = sanitizeRunTimestamp('2026-04-10T12:00:00Z')
+    const expectedRunStatePath = join(
+      tempDir,
+      'pipeline_mcp_data',
+      'runs',
+      `${sanitizedName}-${sanitizedTs}`,
+      'run-state.json',
+    )
+
+    // run-state.json lives under run_data_dir
+    assert.ok(
+      existsSync(expectedRunStatePath),
+      `expected run-state.json at ${expectedRunStatePath}`,
+    )
+
+    // run-state.json must NOT be written to the legacy stateDir
+    assert.ok(
+      !existsSync(join(stateDir, 'run-state.json')),
+      `run-state.json should not be written to legacy stateDir ${stateDir}`,
+    )
+
+    // Contents round-trip correctly and preserve run_data_dir
+    const persisted = JSON.parse(readFileSync(expectedRunStatePath, 'utf-8')) as RunState
+    assert.equal(persisted.run_id, 'legacy-runid')
+    assert.equal(persisted.run_data_dir, expectedRunDir)
+    assert.equal(persisted.run_parameters?.run_name, 'c8-write-test')
+  })
+
+  it('falls back to stateDir when run_parameters absent', () => {
+    // Silence the expected "parameterization inactive" warning
+    const originalWarn = console.warn
+    console.warn = () => {}
+    try {
+      const baseDir = join(tempDir, 'pipeline_mcp_data')
+      const stateDir = join(baseDir, 'runs', 'legacy-runid-nopar')
+
+      const state = initRun('legacy-runid-nopar', 'v1', ['phase-a'], stateDir)
+
+      // run_data_dir must remain unset for legacy runs
+      assert.equal(state.run_data_dir, undefined)
+
+      // run-state.json lands in the legacy stateDir
+      assert.ok(
+        existsSync(join(stateDir, 'run-state.json')),
+        `expected run-state.json at legacy ${stateDir}`,
+      )
+
+      // Reload from stateDir and confirm run_data_dir remains absent on the
+      // persisted state (legacy layout preserved, no Feature C redirect).
+      const runsDir = join(baseDir, 'runs')
+      const loaded = loadRunState(stateDir)
+      assert.ok(loaded, 'legacy state should load from stateDir')
+      assert.equal(loaded.run_data_dir, undefined)
+      assert.ok(existsSync(runsDir))
+    } finally {
+      console.warn = originalWarn
+    }
+  })
+
+  it('subsequent phase transitions also land in run_data_dir, not stateDir', () => {
+    const baseDir = join(tempDir, 'pipeline_mcp_data')
+    const stateDir = join(baseDir, 'runs', 'legacy-runid-trans')
+
+    let state = initRun('legacy-runid-trans', 'v1', ['phase-a'], stateDir, {
+      run_name: 'c8-transitions',
+      run_directory_timestamp: '2026-04-10T13:00:00Z',
+      phase_model: 'test-model',
+    })
+
+    const expectedRunDir = getRunDataDir(baseDir, 'c8-transitions', '2026-04-10T13:00:00Z')
+    const runStatePath = join(expectedRunDir, 'run-state.json')
+    const legacyStatePath = join(stateDir, 'run-state.json')
+
+    // Baseline: initRun landed it in run_data_dir
+    assert.ok(existsSync(runStatePath))
+    assert.ok(!existsSync(legacyStatePath))
+
+    // startPhase should update the file in run_data_dir, not stateDir
+    state = startPhase(state, 'phase-a', stateDir)
+    assert.ok(existsSync(runStatePath))
+    assert.ok(
+      !existsSync(legacyStatePath),
+      'startPhase must not write to legacy stateDir when run_data_dir is set',
+    )
+    let persisted = JSON.parse(readFileSync(runStatePath, 'utf-8')) as RunState
+    assert.equal(persisted.phases['phase-a'].status, 'in_progress')
+
+    // completePhase should also update the file in run_data_dir
+    state = completePhase(state, 'phase-a', stateDir)
+    assert.ok(existsSync(runStatePath))
+    assert.ok(
+      !existsSync(legacyStatePath),
+      'completePhase must not write to legacy stateDir when run_data_dir is set',
+    )
+    persisted = JSON.parse(readFileSync(runStatePath, 'utf-8')) as RunState
+    assert.equal(persisted.phases['phase-a'].status, 'completed')
+    assert.equal(persisted.status, 'completed')
+  })
+
+  it('resolveRunWriteDir returns run_data_dir when set', () => {
+    const state = { run_data_dir: '/abs/path' } as unknown as RunState
+    assert.equal(resolveRunWriteDir(state, '/fallback'), '/abs/path')
+  })
+
+  it('resolveRunWriteDir returns fallbackDir when run_data_dir is undefined', () => {
+    const state = {} as unknown as RunState
+    assert.equal(resolveRunWriteDir(state, '/fallback'), '/fallback')
   })
 })

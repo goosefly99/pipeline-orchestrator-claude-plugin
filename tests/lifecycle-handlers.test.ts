@@ -1,11 +1,13 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import { join, normalize } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
   handleFailPhase,
   handleRetryPhase,
+  handleInitRun,
+  handleStartPhase,
   type LifecycleContext,
 } from '../lifecycle-handlers.ts'
 import {
@@ -16,7 +18,8 @@ import {
   recoverRun as recoverRunState,
   removePhaseArtifacts as removePhaseArtifactsState,
 } from '../run-state.ts'
-import type { RunState, PipelineConfig, ArtifactRef, StorageConfig, PhaseDefinition, GateResult } from '../types.ts'
+import { getRunDataDir } from '../storage.ts'
+import type { RunState, PipelineConfig, ArtifactRef, StorageConfig, PhaseDefinition, GateResult, PipelineRunParameters, PhaseState } from '../types.ts'
 import type { InputSatisfaction } from '../dag.ts'
 import type { RecommendedAction, RecoveryResult } from '../run-state.ts'
 
@@ -224,5 +227,383 @@ describe('handleRetryPhase', () => {
       () => handleRetryPhase({ phase: 'discovery' }, ctx),
       /Cannot retry phase "discovery": status is "pending"/,
     )
+  })
+})
+
+// ── Feature C step C8 — active run dir redirect ─────────────
+//
+// After initRun has computed state.run_data_dir from run_parameters
+// (run_name + run_directory_timestamp), handleInitRun must redirect the
+// stored activeRunDir to that canonical per-run tree so downstream
+// appendEvent / persist callers land in pipeline_mcp_data/runs/{name-ts}/
+// instead of the legacy pipeline_mcp_data/runs/{run_id}/ path. Legacy runs
+// (no run_parameters, state.run_data_dir undefined) must keep the legacy
+// path unchanged — the redirect is guarded by the inequality check.
+
+describe('Feature C step C8 — active run dir redirect', () => {
+  /**
+   * Build a stub RunState with minimal required fields for initRun return
+   * mocking. Optional run_data_dir lets callers simulate either the
+   * Feature-C canonical layout (non-undefined) or legacy layout (undefined).
+   */
+  function makeStubRunState(
+    runId: string,
+    phaseNames: string[],
+    runDataDir: string | undefined,
+    runParameters?: PipelineRunParameters,
+  ): RunState {
+    const phases: Record<string, PhaseState> = {}
+    for (const name of phaseNames) {
+      phases[name] = {
+        phase_name: name,
+        status: 'pending',
+        input_artifacts: [],
+        output_artifacts: [],
+        retry_count: 0,
+      }
+    }
+    const state: RunState = {
+      run_id: runId,
+      pipeline_version: '1.0.0',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      status: 'initialized',
+      phases,
+      available_artifacts: [],
+      config_path: '',
+    }
+    if (runDataDir !== undefined) state.run_data_dir = runDataDir
+    if (runParameters) state.run_parameters = runParameters
+    return state
+  }
+
+  /**
+   * Build a LifecycleContext that records every call to setActiveRunDir and
+   * captures the runParameters argument passed to initRun. Tests can
+   * inspect the recorded data afterwards. The stubbed initRun returns the
+   * provided RunState verbatim so callers can control whether run_data_dir
+   * is populated.
+   */
+  function makeRecordingCtx(
+    baseDir: string,
+    stubbedInitRunState: RunState,
+    optionalPhases: string[] = [],
+  ): LifecycleContext & {
+    setActiveRunDirCalls: string[]
+    initRunCalls: Array<{
+      runId: string
+      pipelineVersion: string
+      phaseNames: string[]
+      stateDir: string
+      runParameters: PipelineRunParameters | undefined
+    }>
+  } {
+    const setActiveRunDirCalls: string[] = []
+    const initRunCalls: Array<{
+      runId: string
+      pipelineVersion: string
+      phaseNames: string[]
+      stateDir: string
+      runParameters: PipelineRunParameters | undefined
+    }> = []
+    let activeRun: RunState | null = null
+    let activeRunDir = ''
+
+    const ctx: LifecycleContext = {
+      getActiveRun: () => activeRun,
+      setActiveRun: (s) => { activeRun = s },
+      getActiveRunDir: () => activeRunDir,
+      setActiveRunDir: (dir) => {
+        setActiveRunDirCalls.push(dir)
+        activeRunDir = dir
+      },
+      getConfig: () => makeConfig(optionalPhases),
+      setProjectRoot: () => {},
+      getStorageConfig: (): StorageConfig => ({ base_dir: baseDir, paths: {} }),
+      initRun: (runId, pipelineVersion, phaseNames, stateDir, runParameters) => {
+        initRunCalls.push({ runId, pipelineVersion, phaseNames, stateDir, runParameters })
+        return stubbedInitRunState
+      },
+      skipPhase: (s) => s,
+      addArtifact: (s) => s,
+      startPhase: (s) => s,
+      completePhase: (s) => s,
+      failPhase: (s) => s,
+      retryPhase: (s) => s,
+      resolveNextPhases: () => [],
+      getPhaseInputSatisfaction: (phase): InputSatisfaction => ({
+        satisfied: [],
+        missing: phase.inputs,
+        can_run: false,
+      }),
+      loadRunState: () => null,
+      recoverRun: (): RecoveryResult => ({
+        state: stubbedInitRunState,
+        recovered_phases: [],
+        warnings: [],
+      }),
+      removePhaseArtifacts: () => [],
+      getQualityGates: () => [],
+      runGateChecks: (): GateResult => ({ phase: '', passed: true, on_failure: 'warn', results: [] }),
+      getHooksConfig: () => [],
+      runHooks: () => [],
+      runPrePipelineInitHooks: () => ({ parameters: {}, userPrompts: [] }),
+      getProjectRoot: () => null,
+      computeRecommendedAction: (): RecommendedAction => ({ action: 'review', reason: '' }),
+      computeRunWarnings: () => [],
+    }
+
+    return Object.assign(ctx, { setActiveRunDirCalls, initRunCalls })
+  }
+
+  it('handleInitRun with run_parameters redirects activeRunDir to canonical run_data_dir', () => {
+    // Caller-supplied run_parameters — handler must forward these through to
+    // ctx.initRun AND consume the resulting run_data_dir to redirect activeRunDir.
+    const runId = 'feature-c-run'
+    const runName = 'feature-c-test'
+    const runDirectoryTimestamp = '2026-04-10T09-13-58-000Z'
+    const runParameters: PipelineRunParameters = {
+      run_name: runName,
+      run_directory_timestamp: runDirectoryTimestamp,
+    }
+
+    // Canonical path the redirect should land on. Computed via the same
+    // helper production code uses so the sanitization rules stay in sync.
+    const canonicalRunDataDir = getRunDataDir(tempDir, runName, runDirectoryTimestamp)
+    const legacyRunDir = join(tempDir, 'runs', runId)
+
+    // Stub initRun so it returns a RunState carrying the canonical path in
+    // run_data_dir — simulating the production behavior from run-state.ts.
+    const stubbedState = makeStubRunState(runId, ['discovery', 'curation'], canonicalRunDataDir, runParameters)
+    const ctx = makeRecordingCtx(tempDir, stubbedState)
+
+    handleInitRun(
+      {
+        run_id: runId,
+        project_root: tempDir,
+        base_dir: tempDir,
+        run_parameters: runParameters as unknown as Record<string, unknown>,
+      },
+      ctx,
+    )
+
+    // initRun must have been called exactly once, and must have received the
+    // caller-supplied run_parameters object verbatim. This is what lets the
+    // production initRun compute run_data_dir internally.
+    assert.equal(ctx.initRunCalls.length, 1, 'ctx.initRun should be called exactly once')
+    assert.deepEqual(
+      ctx.initRunCalls[0].runParameters,
+      runParameters,
+      'run_parameters must be forwarded to ctx.initRun',
+    )
+    // Sanity: the stateDir argument passed to initRun must be the legacy path
+    // so that run-state.ts can derive baseDir via dirname(dirname(stateDir)).
+    assert.equal(
+      normalize(ctx.initRunCalls[0].stateDir),
+      normalize(legacyRunDir),
+      'stateDir passed to ctx.initRun must be the legacy runs/{runId} path',
+    )
+
+    // setActiveRunDir must be called at least twice:
+    //   1. First with legacyRunDir (initial assignment before initRun runs).
+    //   2. Then with the canonical run_data_dir path (the redirect).
+    assert.ok(
+      ctx.setActiveRunDirCalls.length >= 2,
+      `expected at least 2 setActiveRunDir calls, got ${ctx.setActiveRunDirCalls.length}`,
+    )
+    assert.equal(
+      normalize(ctx.setActiveRunDirCalls[0]),
+      normalize(legacyRunDir),
+      'first setActiveRunDir call must be the legacy path',
+    )
+    // Last call must be the canonical path — any intermediate calls are fine.
+    const lastCall = ctx.setActiveRunDirCalls[ctx.setActiveRunDirCalls.length - 1]
+    assert.equal(
+      normalize(lastCall),
+      normalize(canonicalRunDataDir),
+      'last setActiveRunDir call must be the canonical run_data_dir',
+    )
+    // And the canonical path must not equal the legacy path — otherwise the
+    // redirect is a no-op and we'd be asserting the wrong thing.
+    assert.notEqual(
+      normalize(canonicalRunDataDir),
+      normalize(legacyRunDir),
+      'test precondition: canonical run_data_dir must differ from legacy path',
+    )
+  })
+
+  it('handleInitRun without run_parameters leaves activeRunDir on the legacy path', () => {
+    // No run_parameters → production initRun leaves state.run_data_dir
+    // undefined. The handler guard `if (activeRunDir !== legacyRunDir)` is
+    // therefore false (both sides equal legacyRunDir), so the second
+    // setActiveRunDir call is skipped entirely.
+    const runId = 'legacy-run'
+    const legacyRunDir = join(tempDir, 'runs', runId)
+
+    const stubbedState = makeStubRunState(runId, ['discovery', 'curation'], undefined)
+    const ctx = makeRecordingCtx(tempDir, stubbedState)
+
+    handleInitRun(
+      {
+        run_id: runId,
+        project_root: tempDir,
+        base_dir: tempDir,
+      },
+      ctx,
+    )
+
+    // initRun is called, but with undefined run_parameters (or {} — the
+    // handler forwards the result of merging hook params with caller params,
+    // which for a no-hook, no-caller-params run is an empty object literal).
+    assert.equal(ctx.initRunCalls.length, 1, 'ctx.initRun should be called exactly once')
+
+    // setActiveRunDir must fire exactly once — the initial assignment to
+    // legacyRunDir. The guarded redirect block is skipped because the
+    // stubbed initRun returned no run_data_dir.
+    assert.equal(
+      ctx.setActiveRunDirCalls.length,
+      1,
+      `expected exactly 1 setActiveRunDir call for legacy path, got ${ctx.setActiveRunDirCalls.length}: ${JSON.stringify(ctx.setActiveRunDirCalls)}`,
+    )
+    assert.equal(
+      normalize(ctx.setActiveRunDirCalls[0]),
+      normalize(legacyRunDir),
+      'the single setActiveRunDir call must be the legacy path',
+    )
+  })
+
+  it('handleStartPhase after redirect writes events.jsonl under run_data_dir (real disk)', () => {
+    // Full integration test: wire real run-state.ts initRun and startPhase
+    // into the LifecycleContext so the handler's appendEvent/persist calls
+    // land on actual disk. Then assert events.jsonl is under the canonical
+    // run_data_dir and NOT under the legacy runs/{runId}/ path.
+    const runId = 'c8-integration'
+    const runName = 'integration-test'
+    const runDirectoryTimestamp = '2026-04-10T10-00-00-000Z'
+    const runParameters: PipelineRunParameters = {
+      run_name: runName,
+      run_directory_timestamp: runDirectoryTimestamp,
+    }
+
+    const canonicalRunDataDir = getRunDataDir(tempDir, runName, runDirectoryTimestamp)
+    const legacyRunDir = join(tempDir, 'runs', runId)
+
+    // Real disk-backed LifecycleContext — initRun and startPhase come from
+    // run-state.ts, not stubs. activeRun / activeRunDir are held in closure
+    // state so setActiveRunDir actually updates the dir observed by
+    // subsequent getActiveRunDir calls.
+    let activeRun: RunState | null = null
+    let activeRunDir = ''
+
+    const ctx: LifecycleContext = {
+      getActiveRun: () => activeRun,
+      setActiveRun: (s) => { activeRun = s },
+      getActiveRunDir: () => activeRunDir,
+      setActiveRunDir: (dir) => { activeRunDir = dir },
+      getConfig: () => makeConfig(),
+      setProjectRoot: () => {},
+      getStorageConfig: (): StorageConfig => ({ base_dir: tempDir, paths: {} }),
+      initRun: (rId, pv, phases, stateDir, rp) =>
+        initRun(rId, pv, phases, stateDir, rp),
+      skipPhase: (s) => s,
+      addArtifact: (s) => s,
+      startPhase: (s, phase, dir) => startPhase(s, phase, dir),
+      completePhase: (s) => s,
+      failPhase: (s) => s,
+      retryPhase: (s) => s,
+      resolveNextPhases: () => [],
+      getPhaseInputSatisfaction: (phase): InputSatisfaction => ({
+        satisfied: [],
+        missing: phase.inputs,
+        can_run: false,
+      }),
+      loadRunState: () => null,
+      recoverRun: (): RecoveryResult => ({
+        state: activeRun as RunState,
+        recovered_phases: [],
+        warnings: [],
+      }),
+      removePhaseArtifacts: () => [],
+      getQualityGates: () => [],
+      runGateChecks: (): GateResult => ({ phase: '', passed: true, on_failure: 'warn', results: [] }),
+      getHooksConfig: () => [],
+      runHooks: () => [],
+      runPrePipelineInitHooks: () => ({ parameters: {}, userPrompts: [] }),
+      getProjectRoot: () => tempDir,
+      computeRecommendedAction: (): RecommendedAction => ({ action: 'review', reason: '' }),
+      computeRunWarnings: () => [],
+    }
+
+    handleInitRun(
+      {
+        run_id: runId,
+        project_root: tempDir,
+        base_dir: tempDir,
+        run_parameters: runParameters as unknown as Record<string, unknown>,
+      },
+      ctx,
+    )
+
+    // After init, activeRunDir must point to the canonical run_data_dir and
+    // the persisted run-state.json must live there — not under legacyRunDir.
+    assert.equal(
+      normalize(activeRunDir),
+      normalize(canonicalRunDataDir),
+      'activeRunDir must have been redirected to canonical run_data_dir',
+    )
+    // Also assert the RunState field itself was populated by real initRun's
+    // dirname(dirname(stateDir)) → getRunDataDir() chain (not a hand-baked
+    // stub). This is what the fast unit tests above can't verify, so it
+    // anchors the real production contract in this integration test.
+    assert.ok(activeRun, 'activeRun must be set after handleInitRun')
+    assert.equal(
+      normalize((activeRun as RunState).run_data_dir ?? ''),
+      normalize(canonicalRunDataDir),
+      'activeRun.run_data_dir must be the canonical path computed by real initRun',
+    )
+    assert.equal(
+      existsSync(join(canonicalRunDataDir, 'run-state.json')),
+      true,
+      'run-state.json must be written under canonical run_data_dir',
+    )
+    assert.equal(
+      existsSync(join(legacyRunDir, 'run-state.json')),
+      false,
+      'run-state.json must NOT be written under legacy runs/{runId} path',
+    )
+
+    // Now kick off a phase — handler appends phase_started to events.jsonl
+    // at activeRunDir, which the redirect has pointed at canonicalRunDataDir.
+    handleStartPhase({ phase: 'discovery' }, ctx)
+
+    // events.jsonl must exist under the canonical run_data_dir...
+    const canonicalEventsPath = join(canonicalRunDataDir, 'events.jsonl')
+    assert.equal(
+      existsSync(canonicalEventsPath),
+      true,
+      'events.jsonl must be written under canonical run_data_dir',
+    )
+    // ...and must NOT exist under the legacy runs/{runId}/ path.
+    const legacyEventsPath = join(legacyRunDir, 'events.jsonl')
+    assert.equal(
+      existsSync(legacyEventsPath),
+      false,
+      'events.jsonl must NOT be written under legacy runs/{runId} path',
+    )
+
+    // Parse the first event line and confirm it is a phase_started event
+    // for the phase we just started.
+    const raw = readFileSync(canonicalEventsPath, 'utf-8')
+    const firstLine = raw.split('\n').find(l => l.trim().length > 0)
+    assert.ok(firstLine, 'events.jsonl must contain at least one non-empty line')
+    const parsedEvent = JSON.parse(firstLine!) as {
+      event: string
+      phase: string
+      run_id: string
+      timestamp: string
+    }
+    assert.equal(parsedEvent.event, 'phase_started', 'first event must be phase_started')
+    assert.equal(parsedEvent.phase, 'discovery', 'event phase must match the started phase')
+    assert.equal(parsedEvent.run_id, runId, 'event run_id must match')
   })
 })

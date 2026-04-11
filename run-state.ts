@@ -26,10 +26,23 @@ export function atomicRename(tmpPath: string, finalPath: string): void {
   }
 }
 
+/**
+ * Resolve the effective directory for run-state.json and events.jsonl writes.
+ * Feature C (step C8): when `state.run_data_dir` is populated, it takes
+ * precedence over the caller-supplied `fallbackDir` so persistence lands in
+ * the canonical per-run tree (`pipeline_mcp_data/runs/{name-timestamp}/`).
+ * Legacy (pre-Feature-C) runs whose state has no `run_data_dir` continue to
+ * use the caller's fallback, preserving backwards compatibility.
+ */
+export function resolveRunWriteDir(state: RunState, fallbackDir: string): string {
+  return state.run_data_dir ?? fallbackDir
+}
+
 function persist(state: RunState, stateDir: string): void {
-  if (!existsSync(stateDir)) mkdirSync(stateDir, { recursive: true })
+  const writeDir = resolveRunWriteDir(state, stateDir)
+  if (!existsSync(writeDir)) mkdirSync(writeDir, { recursive: true })
   state.updated_at = new Date().toISOString()
-  const finalPath = join(stateDir, STATE_FILE)
+  const finalPath = join(writeDir, STATE_FILE)
   const tmpPath = finalPath + '.tmp'
   writeFileSync(tmpPath, JSON.stringify(state, null, 2), 'utf-8')
   atomicRename(tmpPath, finalPath)

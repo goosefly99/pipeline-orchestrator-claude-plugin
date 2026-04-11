@@ -235,8 +235,8 @@ export function handleInitRun(args: Record<string, unknown>, ctx: LifecycleConte
 
   const config = ctx.getConfig()
   const sc = ctx.getStorageConfig(baseDir)
-  const activeRunDir = join(sc.base_dir, 'runs', runId)
-  ctx.setActiveRunDir(activeRunDir)
+  const legacyRunDir = join(sc.base_dir, 'runs', runId)
+  ctx.setActiveRunDir(legacyRunDir)
   const phaseNames = Object.keys(config.phases).filter(p => !skipPhasesList.includes(p))
 
   // Collect run parameters from pre_pipeline_init hooks (if any are registered).
@@ -281,7 +281,20 @@ export function handleInitRun(args: Record<string, unknown>, ctx: LifecycleConte
     runParameters = userSuppliedParams as PipelineRunParameters
   }
 
-  let activeRun = ctx.initRun(runId, config.pipeline.version, phaseNames, activeRunDir, runParameters)
+  let activeRun = ctx.initRun(runId, config.pipeline.version, phaseNames, legacyRunDir, runParameters)
+
+  // Feature C step C8: once initRun has computed state.run_data_dir from
+  // run_parameters.run_name + run_directory_timestamp, redirect the stored
+  // activeRunDir to that canonical per-run tree. All subsequent
+  // appendEvent / persist callers read activeRunDir from ctx, so this one
+  // redirect routes events.jsonl and downstream run-state.json writes into
+  // pipeline_mcp_data/runs/{name-timestamp}/ without touching each callsite.
+  // Legacy runs (without run_parameters) keep legacyRunDir and the existing
+  // pipeline_mcp_data/runs/{run_id}/ layout remains unchanged.
+  const activeRunDir = activeRun.run_data_dir ?? legacyRunDir
+  if (activeRunDir !== legacyRunDir) {
+    ctx.setActiveRunDir(activeRunDir)
+  }
 
   // Skip explicitly listed phases
   for (const phase of skipPhasesList) {
