@@ -1,1 +1,5 @@
 * text=auto eol=lf
+
+# Keep auto_dev's plugin.json name distinct from main. Requires per-clone:
+#   git config merge.ours.driver true
+.claude-plugin/plugin.json merge=ours
