@@ -14,7 +14,15 @@ import {
 import type { ArtifactContext } from '../artifact-handlers.ts'
 import { PipelineError } from '../types.ts'
 import type { ArtifactRef, RunState, StorageConfig } from '../types.ts'
-import { storeArtifact, loadArtifact, listArtifacts, buildArtifactSummary } from '../storage.ts'
+import {
+  storeArtifact,
+  loadArtifact,
+  listArtifacts,
+  buildArtifactSummary,
+  persistArtifact,
+  storageKeyToSubtype,
+  getArtifactDir,
+} from '../storage.ts'
 import { initRun, addArtifact, loadRunState } from '../run-state.ts'
 import type { ArtifactSummary } from '../storage.ts'
 
@@ -113,14 +121,26 @@ describe('computeNextVersion', () => {
 /**
  * Build a minimal ArtifactContext backed by real storage and run-state helpers.
  * Only the methods used by handleStoreArtifact and handleListArtifacts are wired.
+ *
+ * When `opts.wirePersistArtifact` is true, the context supplies a
+ * `persistArtifact` closure that routes writes through the run-scoped
+ * `persistArtifact` helper from `../storage.ts`. Callers are responsible for
+ * populating `runState.current.run_data_dir` separately so the handler
+ * branches into the run-scoped path. Defaults preserve the legacy
+ * behavior used by the pre-C7 tests.
  */
-function makeCtx(tempDir: string, runState: { current: RunState }, runDir: string): ArtifactContext {
+function makeCtx(
+  tempDir: string,
+  runState: { current: RunState },
+  runDir: string,
+  opts: { wirePersistArtifact?: boolean } = {},
+): ArtifactContext {
   const sc: StorageConfig = {
     base_dir: tempDir,
     paths: { specs: 'specs', raw_collections: 'collections/raw' },
   }
 
-  return {
+  const ctx: ArtifactContext = {
     getSchemas: () => ({}),
     validateArtifact: () => ({ valid: true, errors: [] }),
     storeArtifact: (config, key, name, artifact, force) => storeArtifact(config, key, name, artifact, force),
@@ -140,6 +160,24 @@ function makeCtx(tempDir: string, runState: { current: RunState }, runDir: strin
       return updated
     },
   }
+
+  if (opts.wirePersistArtifact === true) {
+    // Mirror what server.ts::artifactCtx will do in Agent 3's change.
+    // Looks up active run's run_data_dir at call time so tests can
+    // toggle the field without rebuilding the context.
+    ctx.persistArtifact = (storageKey, fileName, artifact, force) => {
+      const runDataDir = runState.current.run_data_dir
+      const subtype = storageKeyToSubtype(storageKey)
+      if (subtype === null || typeof runDataDir !== 'string' || runDataDir.length === 0) {
+        throw new Error(
+          `persistArtifact: cannot route storageKey="${storageKey}" with run_data_dir="${runDataDir ?? ''}" to run-scoped path`,
+        )
+      }
+      return persistArtifact(runDataDir, subtype, fileName, artifact, force)
+    }
+  }
+
+  return ctx
 }
 
 describe('handleStoreArtifact — versioning and lineage', () => {
@@ -692,5 +730,314 @@ describe('handleRegisterArtifact — emits artifact_stored event', () => {
     assert.equal(details.path, parsed.path)
     assert.equal(typeof details.size_bytes, 'number')
     assert.ok((details.size_bytes as number) > 0, 'size_bytes should be greater than zero')
+  })
+})
+
+// ── C7 run_data_dir routing (Feature C) ──────────────────────
+
+describe('C7 run_data_dir routing', () => {
+  let tempDir: string
+  let runDir: string
+  let runDataDir: string
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'pipeline-c7-test-'))
+    runDir = join(tempDir, 'runs', 'c7-run')
+    runDataDir = join(tempDir, 'runs', 'c7-run-2026-04-10T09-13-58Z')
+  })
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true })
+  })
+
+  it('handleStoreArtifact writes under {runDataDir}/specs/ when run_data_dir is set', () => {
+    const initial = initRun('c7-store-1', '1.0.0', ['synthesis'], runDir)
+    initial.run_data_dir = runDataDir
+    const runState = { current: initial }
+    const ctx = makeCtx(tempDir, runState, runDir, { wirePersistArtifact: true })
+
+    const result = handleStoreArtifact({
+      storage_key: 'specs',
+      file_name: 'c7-spec.json',
+      artifact: { spec_id: 'c7-1' },
+      artifact_type: 'design-spec',
+      phase: 'synthesis',
+    }, ctx)
+
+    const parsed = JSON.parse(result.json) as { data: { path: string } }
+    const expected = join(runDataDir, 'specs', 'c7-spec.json')
+    assert.equal(parsed.data.path, expected, 'response path should be the run-scoped path')
+    assert.ok(existsSync(expected), 'artifact should exist on disk at the run-scoped path')
+    // Legacy path must NOT have received a copy.
+    assert.ok(
+      !existsSync(join(tempDir, 'specs', 'c7-spec.json')),
+      'legacy path should not be populated when run-scoped routing is active',
+    )
+  })
+
+  it('handleStoreArtifact writes under legacy {baseDir}/specs/ when run_data_dir is empty', () => {
+    const initial = initRun('c7-store-2', '1.0.0', ['synthesis'], runDir)
+    // Intentionally leave run_data_dir unset.
+    const runState = { current: initial }
+    const ctx = makeCtx(tempDir, runState, runDir, { wirePersistArtifact: true })
+
+    const result = handleStoreArtifact({
+      storage_key: 'specs',
+      file_name: 'legacy-spec.json',
+      artifact: { spec_id: 'legacy-1' },
+      artifact_type: 'design-spec',
+      phase: 'synthesis',
+    }, ctx)
+
+    const parsed = JSON.parse(result.json) as { data: { path: string } }
+    const expected = join(tempDir, 'specs', 'legacy-spec.json')
+    assert.equal(parsed.data.path, expected, 'response path should be the legacy path')
+    assert.ok(existsSync(expected), 'artifact should exist at legacy path')
+  })
+
+  it('handleStoreArtifact throws the expected collision error when force is absent (run-scoped branch)', () => {
+    const initial = initRun('c7-store-3', '1.0.0', ['synthesis'], runDir)
+    initial.run_data_dir = runDataDir
+    const runState = { current: initial }
+    const ctx = makeCtx(tempDir, runState, runDir, { wirePersistArtifact: true })
+
+    // First write succeeds.
+    handleStoreArtifact({
+      storage_key: 'specs',
+      file_name: 'collide.json',
+      artifact: { id: 'v1' },
+      artifact_type: 'design-spec',
+      phase: 'synthesis',
+    }, ctx)
+
+    const expectedPath = join(runDataDir, 'specs', 'collide.json')
+    // Second write without force=true must throw with the generic "Artifact" message.
+    assert.throws(
+      () =>
+        handleStoreArtifact({
+          storage_key: 'specs',
+          file_name: 'collide.json',
+          artifact: { id: 'v2' },
+          artifact_type: 'design-spec',
+          phase: 'synthesis',
+        }, ctx),
+      (err: unknown) => {
+        assert.ok(err instanceof Error, 'expected Error instance')
+        assert.equal(
+          (err as Error).message,
+          `Artifact already exists at "${expectedPath}". Pass force=true to overwrite.`,
+        )
+        return true
+      },
+    )
+
+    // Existing file untouched.
+    const existing = JSON.parse(readFileSync(expectedPath, 'utf-8'))
+    assert.equal(existing.id, 'v1')
+  })
+
+  it('handleStoreArtifact with unknown storage_key falls through to legacy ctx.storeArtifact regardless of run_data_dir', () => {
+    // Register a 'manifests' path so the legacy helper can resolve it.
+    const initial = initRun('c7-store-4', '1.0.0', ['synthesis'], runDir)
+    initial.run_data_dir = runDataDir
+    const runState = { current: initial }
+    // Use a ctx whose storage config knows about 'raw_collections' (fallback
+    // target for legacy routing). We deliberately pass storage_key="raw_collections"
+    // through a context where persistArtifact IS wired but whose
+    // storageKeyToSubtype DOES map the key, so to exercise the "unknown key"
+    // path we stub out persistArtifact to force a path the real routing
+    // would never pick. Instead: use an unknown key via ctx mutation.
+    const ctx = makeCtx(tempDir, runState, runDir, { wirePersistArtifact: true })
+
+    // Inject an extra StorageConfig path so storeArtifact can resolve it.
+    const scWithManifests: StorageConfig = {
+      base_dir: tempDir,
+      paths: { specs: 'specs', raw_collections: 'collections/raw', manifests: 'manifests' },
+    }
+    ctx.getStorageConfig = () => scWithManifests
+
+    const result = handleStoreArtifact({
+      storage_key: 'manifests',
+      file_name: 'run-manifest.json',
+      artifact: { manifest_id: 'mf-1' },
+      artifact_type: 'run-manifest',
+      phase: 'synthesis',
+    }, ctx)
+
+    const parsed = JSON.parse(result.json) as { data: { path: string } }
+    // 'manifests' has no ArtifactSubtype mapping, so handler must have used
+    // the legacy {baseDir}/manifests path, NOT {runDataDir}/manifests.
+    const expected = join(tempDir, 'manifests', 'run-manifest.json')
+    assert.equal(parsed.data.path, expected, 'unknown storage_key should fall through to legacy path')
+    assert.ok(existsSync(expected))
+    assert.ok(
+      !existsSync(join(runDataDir, 'manifests', 'run-manifest.json')),
+      'run-scoped dir should not contain unmapped-key artifacts',
+    )
+  })
+
+  it('handleLoadArtifact reads from {runDataDir}/specs/ first when run_data_dir is set', () => {
+    const initial = initRun('c7-load-1', '1.0.0', ['synthesis'], runDir)
+    initial.run_data_dir = runDataDir
+    const runState = { current: initial }
+    const ctx = makeCtx(tempDir, runState, runDir, { wirePersistArtifact: true })
+
+    // Write directly to the run-scoped path (bypass the handler).
+    mkdirSync(join(runDataDir, 'specs'), { recursive: true })
+    writeFileSync(
+      join(runDataDir, 'specs', 'run-scoped.json'),
+      JSON.stringify({ source: 'run-scoped', key: 'value' }, null, 2),
+      'utf-8',
+    )
+
+    const result = handleLoadArtifact({
+      storage_key: 'specs',
+      file_name: 'run-scoped.json',
+      full: true,
+    }, ctx)
+
+    const parsed = JSON.parse(result.json) as { source: string }
+    assert.equal(parsed.source, 'run-scoped', 'should have read from the run-scoped path')
+  })
+
+  it('handleLoadArtifact falls back to legacy path when the run-scoped file is missing', () => {
+    const initial = initRun('c7-load-2', '1.0.0', ['synthesis'], runDir)
+    initial.run_data_dir = runDataDir
+    const runState = { current: initial }
+    const ctx = makeCtx(tempDir, runState, runDir, { wirePersistArtifact: true })
+
+    // Populate ONLY the legacy location.
+    mkdirSync(join(tempDir, 'specs'), { recursive: true })
+    writeFileSync(
+      join(tempDir, 'specs', 'legacy-only.json'),
+      JSON.stringify({ source: 'legacy' }, null, 2),
+      'utf-8',
+    )
+
+    const result = handleLoadArtifact({
+      storage_key: 'specs',
+      file_name: 'legacy-only.json',
+      full: true,
+    }, ctx)
+
+    const parsed = JSON.parse(result.json) as { source: string }
+    assert.equal(parsed.source, 'legacy', 'should have fallen back to the legacy path')
+  })
+
+  it('handleLoadArtifact reads from legacy path when run_data_dir is absent', () => {
+    const initial = initRun('c7-load-3', '1.0.0', ['synthesis'], runDir)
+    // No run_data_dir — pre-Feature-C run.
+    const runState = { current: initial }
+    const ctx = makeCtx(tempDir, runState, runDir, { wirePersistArtifact: true })
+
+    mkdirSync(join(tempDir, 'specs'), { recursive: true })
+    writeFileSync(
+      join(tempDir, 'specs', 'no-rdd.json'),
+      JSON.stringify({ source: 'legacy-only' }, null, 2),
+      'utf-8',
+    )
+
+    const result = handleLoadArtifact({
+      storage_key: 'specs',
+      file_name: 'no-rdd.json',
+      full: true,
+    }, ctx)
+
+    const parsed = JSON.parse(result.json) as { source: string }
+    assert.equal(parsed.source, 'legacy-only')
+  })
+
+  it('handleListArtifacts lists from {runDataDir}/specs/ when run_data_dir is set', () => {
+    const initial = initRun('c7-list-1', '1.0.0', ['synthesis'], runDir)
+    initial.run_data_dir = runDataDir
+    const runState = { current: initial }
+    const ctx = makeCtx(tempDir, runState, runDir, { wirePersistArtifact: true })
+
+    // Seed the run-scoped dir with two files.
+    mkdirSync(join(runDataDir, 'specs'), { recursive: true })
+    writeFileSync(join(runDataDir, 'specs', 'a.json'), JSON.stringify({ id: 'a' }), 'utf-8')
+    writeFileSync(join(runDataDir, 'specs', 'b.json'), JSON.stringify({ id: 'b' }), 'utf-8')
+    // Also seed the legacy dir to prove the run-scoped branch doesn't
+    // accidentally read from there.
+    mkdirSync(join(tempDir, 'specs'), { recursive: true })
+    writeFileSync(join(tempDir, 'specs', 'legacy-only.json'), JSON.stringify({}), 'utf-8')
+
+    const result = handleListArtifacts({ storage_key: 'specs' }, ctx)
+    const parsed = JSON.parse(result.json) as {
+      storage_key: string
+      artifacts: Array<{ name: string }>
+    }
+
+    assert.equal(parsed.storage_key, 'specs')
+    const names = parsed.artifacts.map(a => a.name).sort()
+    assert.deepEqual(names, ['a.json', 'b.json'], 'should list only run-scoped files')
+    assert.ok(
+      !names.includes('legacy-only.json'),
+      'legacy-only file must not leak into run-scoped listing',
+    )
+  })
+
+  it('handleListArtifacts returns [] when the run-scoped directory does not yet exist', () => {
+    const initial = initRun('c7-list-2', '1.0.0', ['synthesis'], runDir)
+    initial.run_data_dir = runDataDir
+    const runState = { current: initial }
+    const ctx = makeCtx(tempDir, runState, runDir, { wirePersistArtifact: true })
+
+    // DO NOT create runDataDir/specs — the helper must return [] rather than throw.
+    const result = handleListArtifacts({ storage_key: 'specs' }, ctx)
+    const parsed = JSON.parse(result.json) as {
+      storage_key: string
+      artifacts: Array<{ name: string }>
+    }
+
+    assert.equal(parsed.storage_key, 'specs')
+    assert.deepEqual(parsed.artifacts, [])
+  })
+
+  it('handleListArtifacts falls back to legacy dir when run_data_dir is absent', () => {
+    const initial = initRun('c7-list-3', '1.0.0', ['synthesis'], runDir)
+    // No run_data_dir.
+    const runState = { current: initial }
+    const ctx = makeCtx(tempDir, runState, runDir, { wirePersistArtifact: true })
+
+    mkdirSync(join(tempDir, 'specs'), { recursive: true })
+    writeFileSync(join(tempDir, 'specs', 'l1.json'), JSON.stringify({}), 'utf-8')
+    writeFileSync(join(tempDir, 'specs', 'l2.json'), JSON.stringify({}), 'utf-8')
+
+    const result = handleListArtifacts({ storage_key: 'specs' }, ctx)
+    const parsed = JSON.parse(result.json) as {
+      storage_key: string
+      artifacts: Array<{ name: string }>
+    }
+
+    const names = parsed.artifacts.map(a => a.name).sort()
+    assert.deepEqual(names, ['l1.json', 'l2.json'])
+  })
+
+  it('handleListArtifacts with unknown storage_key falls through to legacy dir regardless of run_data_dir', () => {
+    const initial = initRun('c7-list-4', '1.0.0', ['synthesis'], runDir)
+    initial.run_data_dir = runDataDir
+    const runState = { current: initial }
+    const ctx = makeCtx(tempDir, runState, runDir, { wirePersistArtifact: true })
+
+    // Inject a 'manifests' path into the storage config (unmapped subtype).
+    const scWithManifests: StorageConfig = {
+      base_dir: tempDir,
+      paths: { specs: 'specs', raw_collections: 'collections/raw', manifests: 'manifests' },
+    }
+    ctx.getStorageConfig = () => scWithManifests
+
+    // Seed the legacy manifests dir.
+    mkdirSync(join(tempDir, 'manifests'), { recursive: true })
+    writeFileSync(join(tempDir, 'manifests', 'm1.json'), JSON.stringify({}), 'utf-8')
+
+    const result = handleListArtifacts({ storage_key: 'manifests' }, ctx)
+    const parsed = JSON.parse(result.json) as {
+      storage_key: string
+      artifacts: Array<{ name: string }>
+    }
+
+    const names = parsed.artifacts.map(a => a.name)
+    assert.deepEqual(names, ['m1.json'])
   })
 })

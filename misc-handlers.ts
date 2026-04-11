@@ -19,6 +19,7 @@ import {
 import { validateRun, type RunValidationReport } from './cross-ref-validator.ts'
 import { computeNextVersion } from './artifact-handlers.ts'
 import { appendEvent } from './lifecycle-handlers.ts'
+import { getArtifactDir } from './storage.ts'
 import { PipelineError } from './types.ts'
 import type { RunState, StorageConfig, ResponseEnvelope, PipelineConfig, HandlerResponse, ArtifactRef } from './types.ts'
 import type { SchemaMap, ValidationResult } from './validator.ts'
@@ -61,6 +62,7 @@ export interface WebSearchContext {}
 export interface RegisterScaffoldOutputsContext {
   requireRun(): RunState
   setActiveRun(state: RunState): void
+  getActiveRun(): RunState | null
   getActiveRunDir(): string
   baseDirFromRunDir(runDir: string): string
   addArtifact(state: RunState, ref: ArtifactRef, stateDir: string): RunState
@@ -587,10 +589,18 @@ export function handleRegisterScaffoldOutputs(
   const phase = (args.phase as string | undefined) ?? 'implementation_scaffold'
 
   // Resolve scaffold dir: absolute wins, relative resolves against baseDir,
-  // omitted defaults to "<baseDir>/scaffold".
+  // omitted defaults to the per-run scaffold directory when `state.run_data_dir`
+  // is set (Feature C), otherwise the legacy "<baseDir>/scaffold" layout.
+  // User-supplied paths always resolve against `baseDir` to preserve
+  // backwards compatibility with existing absolute and relative usages.
+  const activeRun = ctx.getActiveRun()
+  const runDataDir = activeRun?.run_data_dir
+  const defaultScaffoldDir = runDataDir
+    ? getArtifactDir(runDataDir, 'scaffold')
+    : join(baseDir, 'scaffold')
   let scaffoldDir: string
   if (scaffoldDirArg === undefined || scaffoldDirArg === '') {
-    scaffoldDir = join(baseDir, 'scaffold')
+    scaffoldDir = defaultScaffoldDir
   } else if (isAbsolute(scaffoldDirArg)) {
     scaffoldDir = scaffoldDirArg
   } else {

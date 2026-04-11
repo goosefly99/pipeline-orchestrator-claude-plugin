@@ -12,6 +12,8 @@ import {
   sanitizeRunTimestamp,
   getRunDataDir,
   getArtifactDir,
+  storageKeyToSubtype,
+  persistArtifact,
 } from '../storage.ts'
 import type { StorageConfig } from '../types.ts'
 
@@ -344,5 +346,128 @@ describe('getArtifactDir', () => {
     // POSIX slash injected by the helper itself.
     const dir = getArtifactDir(runDataDir, 'overviews')
     assert.ok(dir.startsWith(runDataDir))
+  })
+})
+
+describe('storageKeyToSubtype', () => {
+  it('maps raw_collections to collections/raw', () => {
+    assert.equal(storageKeyToSubtype('raw_collections'), 'collections/raw')
+  })
+
+  it('maps curated_collections to collections/curated', () => {
+    assert.equal(storageKeyToSubtype('curated_collections'), 'collections/curated')
+  })
+
+  it('maps overviews to overviews', () => {
+    assert.equal(storageKeyToSubtype('overviews'), 'overviews')
+  })
+
+  it('maps specs to specs', () => {
+    assert.equal(storageKeyToSubtype('specs'), 'specs')
+  })
+
+  it('maps debates to debates', () => {
+    assert.equal(storageKeyToSubtype('debates'), 'debates')
+  })
+
+  it('maps scaffold to scaffold', () => {
+    assert.equal(storageKeyToSubtype('scaffold'), 'scaffold')
+  })
+
+  it('returns null for unknown storage keys (e.g. manifests, codebase, runs)', () => {
+    assert.equal(storageKeyToSubtype('manifests'), null)
+    assert.equal(storageKeyToSubtype('codebase'), null)
+    assert.equal(storageKeyToSubtype('runs'), null)
+  })
+
+  it('returns null for empty string', () => {
+    assert.equal(storageKeyToSubtype(''), null)
+  })
+})
+
+describe('persistArtifact', () => {
+  let runDataDir: string
+
+  beforeEach(() => {
+    // Build a simulated per-run data directory that nests under tempDir
+    // so cleanup in afterEach catches everything.
+    runDataDir = join(tempDir, 'runs', 'my-run-2026-04-10T09-13-58Z')
+  })
+
+  it('writes an artifact under {runDataDir}/{subtype}/{fileName} and returns absolute path', () => {
+    const artifact = { spec_id: 'abc', title: 'Test Spec' }
+    const filePath = persistArtifact(runDataDir, 'specs', 'test-spec.json', artifact)
+
+    assert.ok(existsSync(filePath), 'file should exist on disk')
+    assert.equal(filePath, join(runDataDir, 'specs', 'test-spec.json'))
+    // Path should be absolute (we nested it under tempDir which is absolute).
+    assert.ok(filePath.startsWith(tempDir))
+
+    const stored = JSON.parse(readFileSync(filePath, 'utf-8'))
+    assert.deepEqual(stored, artifact)
+  })
+
+  it('recursively creates missing intermediate directories for nested subtypes', () => {
+    // collections/raw has two levels of nesting under runDataDir.
+    const artifact = { collection_id: 'rc-1', items: [] }
+    const filePath = persistArtifact(runDataDir, 'collections/raw', 'rc-1.json', artifact)
+
+    assert.ok(existsSync(filePath))
+    assert.equal(filePath, join(runDataDir, 'collections', 'raw', 'rc-1.json'))
+  })
+
+  it('throws on collision when force is undefined (default) and preserves existing content', () => {
+    persistArtifact(runDataDir, 'specs', 'collide.json', { id: 'v1' })
+    assert.throws(
+      () => persistArtifact(runDataDir, 'specs', 'collide.json', { id: 'v2' }),
+      /Artifact already exists.*force=true/,
+    )
+    // Existing file untouched.
+    const existing = JSON.parse(readFileSync(join(runDataDir, 'specs', 'collide.json'), 'utf-8'))
+    assert.equal(existing.id, 'v1')
+  })
+
+  it('throws on collision when force=false explicitly', () => {
+    persistArtifact(runDataDir, 'debates', 'd.json', { id: 'first' })
+    assert.throws(
+      () => persistArtifact(runDataDir, 'debates', 'd.json', { id: 'second' }, false),
+      /Artifact already exists.*force=true/,
+    )
+  })
+
+  it('overwrites existing file when force=true', () => {
+    persistArtifact(runDataDir, 'specs', 'over.json', { id: 'v1' })
+    const filePath = persistArtifact(runDataDir, 'specs', 'over.json', { id: 'v2' }, true)
+    const loaded = JSON.parse(readFileSync(filePath, 'utf-8'))
+    assert.equal(loaded.id, 'v2')
+  })
+
+  it('error message format matches storeArtifact byte-for-byte (generic "Artifact" noun)', () => {
+    persistArtifact(runDataDir, 'specs', 'msg.json', { id: 1 })
+    const expected = join(runDataDir, 'specs', 'msg.json')
+    try {
+      persistArtifact(runDataDir, 'specs', 'msg.json', { id: 2 })
+      assert.fail('expected persistArtifact to throw on collision')
+    } catch (err) {
+      const msg = (err as Error).message
+      assert.equal(
+        msg,
+        `Artifact already exists at "${expected}". Pass force=true to overwrite.`,
+        'error message must be byte-identical to storeArtifact',
+      )
+    }
+  })
+
+  it('round-trips arbitrary JSON payloads (arrays, nested objects, scalars)', () => {
+    const artifact = {
+      scalar: 42,
+      nested: { a: [1, 2, 3], b: { c: 'hello' } },
+      list: ['x', 'y'],
+      flag: true,
+      nullField: null,
+    }
+    const filePath = persistArtifact(runDataDir, 'overviews', 'round-trip.json', artifact)
+    const loaded = JSON.parse(readFileSync(filePath, 'utf-8'))
+    assert.deepEqual(loaded, artifact)
   })
 })

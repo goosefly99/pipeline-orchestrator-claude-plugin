@@ -14,7 +14,14 @@ import { loadPipelineConfig, loadQualityGates, loadHooksConfig } from './toml-lo
 import { toolSchemas } from './tool-schemas.ts'
 import { resolveNextPhases, getPhaseInputSatisfaction } from './dag.ts'
 import { loadSchemas, validateArtifact } from './validator.ts'
-import { storeArtifact, loadArtifact, listArtifacts, buildArtifactSummary } from './storage.ts'
+import {
+  storeArtifact,
+  loadArtifact,
+  listArtifacts,
+  buildArtifactSummary,
+  persistArtifact as persistArtifactToDisk,
+  storageKeyToSubtype,
+} from './storage.ts'
 import {
   initRun, startPhase, completePhase, failPhase, retryPhase, skipPhase,
   addArtifact, loadRunState, recoverRun, removePhaseArtifacts,
@@ -273,6 +280,20 @@ const artifactCtx: ArtifactContext = {
   getActiveRunDir: () => activeRunDir,
   requireRun: () => requireRun(),
   addArtifact: (...a) => addArtifact(...a),
+  // Feature C / C7: route artifact writes through run_data_dir when the
+  // storage key maps to a known subtype. handleStoreArtifact only calls this
+  // closure when routing is applicable, so throwing on a contract violation
+  // surfaces mis-wiring loudly rather than silently writing to legacy paths.
+  persistArtifact: (storageKey: string, fileName: string, artifact: unknown, force?: boolean): string => {
+    const runDataDir = activeRun?.run_data_dir
+    const subtype = storageKeyToSubtype(storageKey)
+    if (subtype === null || typeof runDataDir !== 'string' || runDataDir.length === 0) {
+      throw new Error(
+        `persistArtifact: cannot route storageKey="${storageKey}" with run_data_dir="${runDataDir ?? ''}" to run-scoped path`,
+      )
+    }
+    return persistArtifactToDisk(runDataDir, subtype, fileName, artifact, force)
+  },
 }
 
 const lifecycleCtx: LifecycleContext = {
@@ -341,6 +362,7 @@ const webSearchCtx: WebSearchContext = {}
 const scaffoldRegisterCtx: RegisterScaffoldOutputsContext = {
   requireRun: () => requireRun(),
   setActiveRun: (s) => { activeRun = s },
+  getActiveRun: () => activeRun,
   getActiveRunDir: () => activeRunDir,
   baseDirFromRunDir: (rd) => baseDirFromRunDir(rd),
   addArtifact: (...a) => addArtifact(...a),

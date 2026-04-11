@@ -21,17 +21,25 @@ import { initRun, addArtifact } from '../run-state.ts'
 /**
  * Build a minimal RegisterScaffoldOutputsContext backed by real run-state
  * helpers. Mirrors the `makeCtx` pattern used in artifact-handlers.test.ts.
+ *
+ * By default `getActiveRun` returns `null` so tests hit the legacy
+ * `<baseDir>/scaffold` default-dir branch. Pass `exposeActiveRun: true` to
+ * have `getActiveRun` return the current run state instead — needed by the
+ * Feature C "run_data_dir" default-dir tests below.
  */
 function makeCtx(
   tempDir: string,
   runState: { current: RunState },
   runDir: string,
+  options: { exposeActiveRun?: boolean } = {},
 ): RegisterScaffoldOutputsContext {
+  const { exposeActiveRun = false } = options
   return {
     requireRun: () => runState.current,
     setActiveRun: (state) => {
       runState.current = state
     },
+    getActiveRun: () => (exposeActiveRun ? runState.current : null),
     getActiveRunDir: () => runDir,
     baseDirFromRunDir: () => tempDir,
     addArtifact: (state, ref, dir) => addArtifact(state, ref, dir),
@@ -299,5 +307,152 @@ describe('handleRegisterScaffoldOutputs', () => {
 
     // No artifacts should have been registered.
     assert.equal(runState.current.available_artifacts.length, 0)
+  })
+
+  // ── Feature C: per-run scaffold directory default ──────────
+
+  it('uses run_data_dir/scaffold as the default dir when state.run_data_dir is set', () => {
+    // Simulate a Feature C run by attaching a run_data_dir to the run state
+    // and materializing scaffold files under that per-run directory instead
+    // of the legacy `<baseDir>/scaffold` location.
+    const runDataDir = join(tempDir, 'runs', 'featureC-run-2026-04-10')
+    const perRunScaffoldDir = join(runDataDir, 'scaffold')
+    mkdirSync(perRunScaffoldDir, { recursive: true })
+
+    const runState = {
+      current: initRun(
+        'scaffold-run-featureC',
+        '1.0.0',
+        ['implementation_scaffold'],
+        runDir,
+      ),
+    }
+    runState.current = {
+      ...runState.current,
+      run_data_dir: runDataDir,
+    }
+
+    // Write scaffold files at the per-run location, NOT the legacy location.
+    writeFileSync(
+      join(perRunScaffoldDir, 'IMPLEMENTATION-PLAN.md'),
+      '# Plan (per-run)\n',
+      'utf-8',
+    )
+    writeFileSync(
+      join(perRunScaffoldDir, 'SCAFFOLD-INDEX.md'),
+      '# Index (per-run)\n',
+      'utf-8',
+    )
+    writeFileSync(
+      join(perRunScaffoldDir, 'scaffold-manifest.json'),
+      JSON.stringify({ version: 1 }),
+      'utf-8',
+    )
+
+    const ctx = makeCtx(tempDir, runState, runDir, { exposeActiveRun: true })
+    const result = handleRegisterScaffoldOutputs({}, ctx)
+    assert.ok(!result.isError, 'response should not be an error')
+
+    const parsed = JSON.parse(result.json) as {
+      status: string
+      data: {
+        scaffold_dir: string
+        registered: Array<{
+          filename: string
+          artifact_type: string
+          path: string
+          version: number
+        }>
+        skipped_existing: string[]
+      }
+    }
+
+    assert.equal(parsed.status, 'ok')
+    // The handler should have resolved to the per-run scaffold directory.
+    assert.equal(
+      parsed.data.scaffold_dir,
+      perRunScaffoldDir,
+      'default scaffold_dir should be getArtifactDir(run_data_dir, "scaffold")',
+    )
+    assert.equal(parsed.data.registered.length, 3)
+    assert.equal(parsed.data.skipped_existing.length, 0)
+
+    // Every registered artifact path must be rooted at the per-run scaffold dir.
+    for (const entry of parsed.data.registered) {
+      assert.ok(
+        entry.path.startsWith(perRunScaffoldDir),
+        `registered path ${entry.path} should be rooted at ${perRunScaffoldDir}`,
+      )
+    }
+    // And the run state should now carry exactly three artifacts rooted there.
+    assert.equal(runState.current.available_artifacts.length, 3)
+    for (const ref of runState.current.available_artifacts) {
+      assert.ok(
+        ref.path.startsWith(perRunScaffoldDir),
+        `state artifact path ${ref.path} should be rooted at ${perRunScaffoldDir}`,
+      )
+    }
+  })
+
+  it('falls back to {baseDir}/scaffold when state.run_data_dir is empty (legacy run)', () => {
+    // Legacy run: run_data_dir is NOT set on the run state. The handler must
+    // default to the historical `<baseDir>/scaffold` location so pre-Feature-C
+    // runs continue to work unchanged.
+    const runState = {
+      current: initRun(
+        'scaffold-run-legacy',
+        '1.0.0',
+        ['implementation_scaffold'],
+        runDir,
+      ),
+    }
+    // Explicitly ensure run_data_dir is absent (initRun omits it when no
+    // run_parameters are supplied, but we assert the invariant here).
+    assert.equal(
+      runState.current.run_data_dir,
+      undefined,
+      'legacy init should leave run_data_dir unset',
+    )
+
+    // Materialize scaffold files at the legacy top-level location.
+    mkdirSync(scaffoldDir, { recursive: true })
+    writeFileSync(
+      join(scaffoldDir, 'IMPLEMENTATION-PLAN.md'),
+      '# Legacy plan\n',
+      'utf-8',
+    )
+    writeFileSync(
+      join(scaffoldDir, 'scaffold-manifest.json'),
+      JSON.stringify({ version: 1 }),
+      'utf-8',
+    )
+
+    // Expose the active run (with empty run_data_dir) to exercise the
+    // undefined-check branch rather than the null branch.
+    const ctx = makeCtx(tempDir, runState, runDir, { exposeActiveRun: true })
+    const result = handleRegisterScaffoldOutputs({}, ctx)
+    assert.ok(!result.isError, 'response should not be an error')
+
+    const parsed = JSON.parse(result.json) as {
+      status: string
+      data: {
+        scaffold_dir: string
+        registered: Array<{ path: string }>
+      }
+    }
+
+    assert.equal(parsed.status, 'ok')
+    assert.equal(
+      parsed.data.scaffold_dir,
+      scaffoldDir,
+      'legacy default scaffold_dir should be `<baseDir>/scaffold`',
+    )
+    assert.equal(parsed.data.registered.length, 2)
+    for (const entry of parsed.data.registered) {
+      assert.ok(
+        entry.path.startsWith(scaffoldDir),
+        `legacy registered path ${entry.path} should be rooted at ${scaffoldDir}`,
+      )
+    }
   })
 })

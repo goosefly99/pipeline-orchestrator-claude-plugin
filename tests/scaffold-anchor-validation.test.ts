@@ -33,6 +33,7 @@ function makeCtx(
     setActiveRun: (state) => {
       runState.current = state
     },
+    getActiveRun: () => null,
     getActiveRunDir: () => runDir,
     baseDirFromRunDir: () => baseDir,
     addArtifact: (state, ref, dir) => addArtifact(state, ref, dir),

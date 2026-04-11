@@ -109,6 +109,63 @@ export function getArtifactDir(runDataDir: string, subtype: ArtifactSubtype): st
   return join(runDataDir, subtype)
 }
 
+/**
+ * Map a storage_key (as used by pipeline_store_artifact tool params and
+ * pipeline.toml storage.paths) to the ArtifactSubtype union used by
+ * getArtifactDir. Returns null for storage keys that have no run-scoped
+ * subtype mapping (e.g. 'manifests', 'codebase', 'runs') so callers can
+ * fall back to legacy path resolution without throwing.
+ *
+ * The pipeline.toml storage.paths keys are an external, tool-facing API
+ * (pipeline_store_artifact's storage_key parameter), while the
+ * ArtifactSubtype union is an internal helper type for per-run directory
+ * layout. This function is the only sanctioned bridge between the two.
+ */
+export function storageKeyToSubtype(storageKey: string): ArtifactSubtype | null {
+  switch (storageKey) {
+    case 'raw_collections': return 'collections/raw'
+    case 'curated_collections': return 'collections/curated'
+    case 'overviews': return 'overviews'
+    case 'specs': return 'specs'
+    case 'debates': return 'debates'
+    case 'scaffold': return 'scaffold'
+    default: return null
+  }
+}
+
+/**
+ * Per-run artifact write helper (Feature C).
+ *
+ * When `runDataDir` is a non-empty string, resolves the target directory
+ * via `getArtifactDir(runDataDir, subtype)` and writes the artifact there.
+ * Preserves the throw-on-collision-unless-force semantics of
+ * {@link storeArtifact} per AGENTS.md § "Artifact storage safety".
+ *
+ * This helper does NOT fall back to legacy paths — callers that need
+ * legacy-run support should branch on `runDataDir` themselves and call
+ * {@link storeArtifact} for the legacy case. This keeps each helper
+ * single-purpose.
+ *
+ * @returns absolute path written
+ * @throws if the file already exists and `force !== true`
+ */
+export function persistArtifact(
+  runDataDir: string,
+  subtype: ArtifactSubtype,
+  fileName: string,
+  artifact: unknown,
+  force?: boolean,
+): string {
+  const dir = getArtifactDir(runDataDir, subtype)
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  const filePath = join(dir, fileName)
+  if (existsSync(filePath) && force !== true) {
+    throw new Error(`Artifact already exists at "${filePath}". Pass force=true to overwrite.`)
+  }
+  writeFileSync(filePath, JSON.stringify(artifact, null, 2), 'utf-8')
+  return filePath
+}
+
 export function storeArtifact(
   config: StorageConfig,
   storageKey: string,

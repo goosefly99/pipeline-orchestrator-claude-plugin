@@ -1,11 +1,12 @@
 // artifact-handlers.ts — artifact tool handler logic extracted from server.ts
 
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, isAbsolute, join, normalize, resolve } from 'node:path'
 import { PipelineError } from './types.ts'
 import type { RunState, StorageConfig, ResponseEnvelope, ArtifactRef, HandlerResponse } from './types.ts'
 import type { SchemaMap, ValidationResult } from './validator.ts'
 import type { ArtifactSummary } from './storage.ts'
+import { getArtifactDir, storageKeyToSubtype } from './storage.ts'
 import { appendEvent } from './lifecycle-handlers.ts'
 
 // ── Helper: safe file size ────────────────────────────────────
@@ -44,6 +45,24 @@ export interface ArtifactContext {
   getActiveRunDir(): string
   requireRun(): RunState
   addArtifact(state: RunState, ref: ArtifactRef, stateDir: string): RunState
+
+  /**
+   * Per-run artifact persistence (Feature C). When present, takes
+   * precedence over {@link storeArtifact} in {@link handleStoreArtifact}
+   * whenever the active run's `run_data_dir` is populated and the
+   * `storageKey` maps to a known `ArtifactSubtype`. Server.ts wires this
+   * to `persistArtifact(runDataDir, subtype, fileName, artifact, force)`
+   * so callers get run-scoped routing automatically.
+   *
+   * Optional so older test fixtures that mock the context without this
+   * field continue to fall back to {@link storeArtifact}. Preserves the
+   * throw-on-collision-unless-force semantics of
+   * `storage.ts::storeArtifact` per AGENTS.md § "Artifact storage
+   * safety". Implementations should throw for unknown storage keys or
+   * when `run_data_dir` is absent so the handler can catch the signal
+   * and fall through to the legacy path.
+   */
+  persistArtifact?(storageKey: string, fileName: string, artifact: unknown, force?: boolean): string
 }
 
 // Re-export HandlerResponse for backward compatibility
@@ -175,9 +194,15 @@ export function handleStoreArtifact(args: Record<string, unknown>, ctx: Artifact
   const baseDir = ctx.baseDirFromRunDir(activeRunDir)
   const sc = ctx.getStorageConfig(baseDir)
 
-  let storedPath: string
+  // Feature C: resolve the artifact payload (inline or from file) once,
+  // then prefer the run-scoped persistArtifact closure when the context
+  // supplies it AND the active run has a populated run_data_dir AND the
+  // storage_key maps to a known ArtifactSubtype. Otherwise fall through
+  // to the legacy storeArtifact path. Both branches share the same
+  // error handling for file_path resolution and populate storedPath
+  // identically so the MCP response envelope is byte-identical.
+  let content: unknown
   if (filePath) {
-    // Load artifact from disk instead of inline
     const resolved = resolveFilePath(filePath, baseDir)
     if (!existsSync(resolved)) {
       throw new PipelineError(`File not found: ${resolved}`, 'artifact_not_found', {
@@ -185,10 +210,24 @@ export function handleStoreArtifact(args: Record<string, unknown>, ctx: Artifact
         details: { path: resolved },
       })
     }
-    const content = JSON.parse(readFileSync(resolved, 'utf-8')) as unknown
-    storedPath = ctx.storeArtifact(sc, storageKey, fileName, content, force)
+    content = JSON.parse(readFileSync(resolved, 'utf-8')) as unknown
   } else {
-    storedPath = ctx.storeArtifact(sc, storageKey, fileName, artifact, force)
+    content = artifact
+  }
+
+  const runDataDir = state.run_data_dir
+  const subtype = storageKeyToSubtype(storageKey)
+  const canUseRunScoped =
+    ctx.persistArtifact !== undefined &&
+    typeof runDataDir === 'string' &&
+    runDataDir.length > 0 &&
+    subtype !== null
+
+  let storedPath: string
+  if (canUseRunScoped && ctx.persistArtifact !== undefined) {
+    storedPath = ctx.persistArtifact(storageKey, fileName, content, force)
+  } else {
+    storedPath = ctx.storeArtifact(sc, storageKey, fileName, content, force)
   }
 
   const version = computeNextVersion(state.available_artifacts, artifactType, phase)
@@ -311,7 +350,29 @@ export function handleLoadArtifact(args: Record<string, unknown>, ctx: ArtifactC
     ? ctx.baseDirFromRunDir(activeRunDir)
     : resolve(ctx.getProjectRoot(), ctx.getConfigStorageBaseDir())
   const sc = ctx.getStorageConfig(baseDir)
-  const artifact = ctx.loadArtifact(sc, storageKey, fileName)
+
+  // Feature C: read from the run-scoped directory first when the active
+  // run has a populated run_data_dir and the storage_key maps to a known
+  // subtype. If the artifact is not present there (or either condition
+  // is unmet), fall through to the legacy ctx.loadArtifact path. This
+  // effectively gives load the ability to read from either location and
+  // sets up C8's formal legacy fallback.
+  let artifact: unknown | null = null
+  const runDataDir = activeRun?.run_data_dir
+  const subtype = storageKeyToSubtype(storageKey)
+  if (
+    typeof runDataDir === 'string' &&
+    runDataDir.length > 0 &&
+    subtype !== null
+  ) {
+    const candidate = join(getArtifactDir(runDataDir, subtype), fileName)
+    if (existsSync(candidate)) {
+      artifact = JSON.parse(readFileSync(candidate, 'utf-8')) as unknown
+    }
+  }
+  if (artifact === null) {
+    artifact = ctx.loadArtifact(sc, storageKey, fileName)
+  }
 
   if (artifact === null) {
     throw new PipelineError(`Artifact not found: ${storageKey}/${fileName}`, 'artifact_not_found', {
@@ -354,12 +415,35 @@ export function handleListArtifacts(args: Record<string, unknown>, ctx: Artifact
     ? ctx.baseDirFromRunDir(activeRunDir)
     : resolve(ctx.getProjectRoot(), ctx.getConfigStorageBaseDir())
   const sc = ctx.getStorageConfig(baseDir)
-  const files = ctx.listArtifacts(sc, storageKey)
 
-  // Build a lookup: normalized file path → ArtifactRef, using the run's available_artifacts.
-  // The storage subpath for this key determines the directory each file lives in.
-  const subPath = sc.paths[storageKey]
-  const storageDir = subPath !== undefined ? normalize(join(sc.base_dir, subPath)) : null
+  // Feature C: if the active run has a populated run_data_dir and the
+  // storage_key maps to a known subtype, list from the run-scoped
+  // directory. A missing dir returns []. Otherwise fall through to the
+  // legacy ctx.listArtifacts path. The storageDir used for the ref
+  // lookup below must match whichever branch was taken so that
+  // available_artifacts references resolve against the source path.
+  const runDataDir = activeRun?.run_data_dir
+  const subtype = storageKeyToSubtype(storageKey)
+  const useRunScoped =
+    typeof runDataDir === 'string' &&
+    runDataDir.length > 0 &&
+    subtype !== null
+
+  let files: string[]
+  let storageDir: string | null
+  if (useRunScoped && typeof runDataDir === 'string' && subtype !== null) {
+    const runScopedDir = getArtifactDir(runDataDir, subtype)
+    if (existsSync(runScopedDir)) {
+      files = readdirSync(runScopedDir).filter(f => f.endsWith('.json'))
+    } else {
+      files = []
+    }
+    storageDir = normalize(runScopedDir)
+  } else {
+    files = ctx.listArtifacts(sc, storageKey)
+    const subPath = sc.paths[storageKey]
+    storageDir = subPath !== undefined ? normalize(join(sc.base_dir, subPath)) : null
+  }
 
   const availableArtifacts: ArtifactRef[] = activeRun?.available_artifacts ?? []
   const refByFileName = new Map<string, ArtifactRef>()
