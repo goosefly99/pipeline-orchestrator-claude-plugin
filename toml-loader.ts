@@ -28,6 +28,7 @@ export function loadPipelineConfig(tomlPath: string): PipelineConfig {
       optional: raw.optional as boolean | undefined,
       reusable: raw.reusable as boolean | undefined,
       model_tier: raw.model_tier as PhaseDefinition['model_tier'],
+      model: raw.model as string | undefined,
     }
   }
 

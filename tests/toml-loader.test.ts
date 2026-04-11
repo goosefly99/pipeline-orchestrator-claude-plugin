@@ -1,8 +1,10 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { loadPipelineConfig } from '../toml-loader.ts'
-import { resolve, dirname } from 'node:path'
+import { resolve, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PIPELINE_TOML = resolve(__dirname, '../pipeline/pipeline.toml')
@@ -74,5 +76,74 @@ describe('loadPipelineConfig', () => {
       () => loadPipelineConfig('/nonexistent/pipeline.toml'),
       /ENOENT|no such file/,
     )
+  })
+
+  it('parses optional per-phase model field (Feature B precedence top)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'toml-loader-model-'))
+    const tomlPath = join(dir, 'pipeline.toml')
+    try {
+      writeFileSync(
+        tomlPath,
+        [
+          '[pipeline]',
+          'id = "test-pipeline"',
+          'version = "0.0.1"',
+          'description = "fixture for B3 model-field parser test"',
+          '',
+          '[phases.phase_a]',
+          'id = 0',
+          'description = "no model override"',
+          'inputs = []',
+          'outputs = []',
+          'tools = []',
+          'entry_point = true',
+          '',
+          '[phases.phase_b]',
+          'id = 1',
+          'description = "with model override"',
+          'inputs = []',
+          'outputs = []',
+          'tools = []',
+          'entry_point = false',
+          'model = "claude-opus-4-6"',
+          '',
+          '[[edges]]',
+          'from = "phase_a"',
+          'to = "phase_b"',
+          '',
+          '[debate]',
+          '[debate.rounds]',
+          '[debate.output]',
+          'includes_transcript = true',
+          'includes_refined_artifact = true',
+          'artifact_version_bump = "minor"',
+          '',
+          '[schemas]',
+          'pipeline_run = "pipeline/schemas/pipeline-run.json"',
+          '',
+          '[storage]',
+          'base_dir = "pipeline_mcp_data"',
+          '[storage.paths]',
+          'specs = "specs/"',
+          '',
+        ].join('\n'),
+        'utf-8',
+      )
+
+      const config = loadPipelineConfig(tomlPath)
+
+      assert.equal(
+        config.phases.phase_a.model,
+        undefined,
+        'phase without model field must parse to undefined for precedence fall-through',
+      )
+      assert.equal(
+        config.phases.phase_b.model,
+        'claude-opus-4-6',
+        'phase with model field must parse the override string verbatim',
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

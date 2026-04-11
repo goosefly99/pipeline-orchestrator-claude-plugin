@@ -20,9 +20,9 @@
 |-----------|-------|-------|:-----------:|:-----------:|:--------:|:-------:|
 | M0 — Part 1 & Part 2 & Feature A | Quality-gates fix + 7 post-meta-run fixes + pre-init hook | 10 | 0 | 0 | 10 | 0 |
 | M1 — Feature C | Per-run hierarchical artifact directories | 10 | 0 | 0 | 10 | 0 |
-| M2 — Feature B | Pre-phase-start hook with Agent-per-phase execution | 10 | 8 | 0 | 2 | 0 |
+| M2 — Feature B | Pre-phase-start hook with Agent-per-phase execution | 10 | 7 | 0 | 3 | 0 |
 | M3 — Part 6 | Hooks code-review fixes (harness runtime) | 12 | 12 | 0 | 0 | 0 |
-| **Total** | | **42** | **20** | **0** | **22** | **0** |
+| **Total** | | **42** | **19** | **0** | **23** | **0** |
 
 **Current work focus:** M1 → M2 → M3 (M3 can execute in parallel with M1/M2 since it
 targets `hooks/scripts/` rather than the TypeScript MCP server).
@@ -131,7 +131,7 @@ written by the subagent.
 |----|-------------|--------------|:----------:|:------:|
 | B1 | Add `AgentDirective` interface (`subagent_type`, `model`, `description`, `prompt`, `isolation?`). Add optional `model?: string` to the `Phase` type. | `types.ts` | — | Complete |
 | B2 | Extend `HookResult` with optional `agent_directive?: AgentDirective`. Parse `agent_directive` from hook stdout JSON inside the existing hook runner. | `hooks.ts` | B1 | Complete |
-| B3 | Extend `loadPhaseConfig` / phases parser in `toml-loader.ts` to read optional `model` field per phase. Maintain backwards compatibility (undefined = fall through precedence). | `toml-loader.ts` | B1 | Not Started |
+| B3 | Extend `loadPhaseConfig` / phases parser in `toml-loader.ts` to read optional `model` field per phase. Maintain backwards compatibility (undefined = fall through precedence). | `toml-loader.ts` | B1 | Complete |
 | B4 | Add per-phase model overrides to `pipeline/pipeline.toml` — e.g. `debate = "claude-opus-4-6"`, planning-heavy phases use Opus, bounded execution phases use Sonnet. Document convention in a comment block above `[[phases]]`. | `pipeline/pipeline.toml` | B3 | Not Started |
 | B5 | In `handleStartPhase` (lifecycle-handlers.ts): after `generatePhaseBrief` but before returning, (a) resolve `phase_model` via precedence, (b) call `runHooks` with `pre_start` trigger passing `phase`, `run_parameters`, `phase_brief`, resolved `model`, (c) collect any returned `agent_directive`, (d) include it in the response JSON. | `lifecycle-handlers.ts` | B2, B3, M1-C2 | Not Started |
 | B6 | Update `generatePhaseBrief` signature to accept resolved `model` and `run_data_dir`. Include both in the rendered brief text so the spawned subagent sees its model identity and the run's data root. | `phase-brief.ts` | M1-C2 | Not Started |
