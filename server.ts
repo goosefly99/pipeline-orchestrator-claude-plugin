@@ -55,6 +55,8 @@ import {
   handleSynthListSpecs as synthListSpecsHandler,
   createSynthContext,
 } from './synth-handlers.ts'
+import { persistSpec as persistSpecToDisk } from './synth.ts'
+import type { DesignSpec } from './synth-types.ts'
 import {
   handleValidateArtifact as validateArtifactHandler,
   handleStoreArtifact as storeArtifactHandler,
@@ -239,6 +241,19 @@ const synthCtx = {
     } catch {
       return resolve('./specs')
     }
+  },
+  // Feature C: route spec writes through run_data_dir when set, with a
+  // legacy {base_dir}/specs fallback for runs that predate Feature-A.
+  persistSpec: (spec: DesignSpec, outputDirOverride?: string): string => {
+    const legacyBaseDir = activeRun
+      ? baseDirFromRunDir(activeRunDir)
+      : resolve(getProjectRoot(), getConfig().storage.base_dir)
+    return persistSpecToDisk(
+      activeRun?.run_data_dir,
+      legacyBaseDir,
+      spec,
+      outputDirOverride,
+    )
   },
 }
 

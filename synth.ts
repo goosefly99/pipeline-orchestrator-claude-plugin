@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { DesignSpec, SpecSource, SpecType } from './synth-types.ts'
 import type { ResearchItem } from './cc-types.ts'
+import { getArtifactDir } from './storage.ts'
 
 /**
  * Build a synthesis prompt containing:
@@ -160,17 +161,89 @@ export function createSpecSynthesis(
   return { template, synthesis_prompt: synthesis }
 }
 
-export function saveSpec(spec: DesignSpec, outputDir: string): string {
-  const dir = resolve(outputDir)
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-
+/**
+ * Compute the on-disk filename (not a full path) for a given design spec.
+ *
+ * Derives a slug from `spec.title` — lowercased, non-alphanumerics
+ * collapsed to `-`, leading/trailing `-` trimmed, truncated to 60 chars —
+ * and appends `--{spec_id[0..8]}.json`. Pure helper: no I/O, no module state.
+ */
+export function specFileName(spec: DesignSpec): string {
   const slug = spec.title
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '')
     .substring(0, 60)
-  const fileName = `${slug}--${spec.spec_id.substring(0, 8)}.json`
-  const filePath = join(dir, fileName)
+
+  return `${slug}--${spec.spec_id.substring(0, 8)}.json`
+}
+
+export function saveSpec(spec: DesignSpec, outputDir: string): string {
+  const dir = resolve(outputDir)
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+
+  const filePath = join(dir, specFileName(spec))
+
+  spec.updated_date = new Date().toISOString().split('T')[0]!
+  writeFileSync(filePath, JSON.stringify(spec, null, 2), 'utf-8')
+  return filePath
+}
+
+// ── Per-run spec write helpers (Feature C) ──────────────────────
+//
+// Route spec persistence through `state.run_data_dir` when set,
+// falling back to `{legacyBaseDir}/specs/` when a run predates
+// Feature-A parameterization. Preserves the historical
+// "disk-first, overwrite-ok" semantics of saveSpec — collision
+// is avoided in practice by the spec_id-derived suffix on filenames.
+
+/**
+ * Resolve the on-disk directory for design specs.
+ *
+ * - When `runDataDir` is a non-empty string, returns
+ *   `getArtifactDir(runDataDir, 'specs')`.
+ * - Otherwise falls back to `{legacyBaseDir}/specs`.
+ */
+export function resolveSpecsDir(
+  runDataDir: string | undefined,
+  legacyBaseDir: string,
+): string {
+  if (runDataDir) {
+    return getArtifactDir(runDataDir, 'specs')
+  }
+  return join(legacyBaseDir, 'specs')
+}
+
+/**
+ * Persist a design spec under the run's data directory.
+ *
+ * Precedence for the target directory:
+ *   1. `outputDirOverride` (resolved absolute) — preserves the explicit
+ *      `output_dir` user-override semantics of `handleSynthSaveSpec`.
+ *   2. `getArtifactDir(runDataDir, 'specs')` when `runDataDir` is set.
+ *   3. `{legacyBaseDir}/specs` as the legacy fallback.
+ *
+ * When both `runDataDir` and `outputDirOverride` are absent, writes under
+ * `legacyBaseDir` so callers like `server.ts` retain full control over the
+ * fallback location.
+ *
+ * Mutates `spec.updated_date` to today's date before writing, matching the
+ * existing behavior of `saveSpec`.
+ *
+ * @returns the absolute path written.
+ */
+export function persistSpec(
+  runDataDir: string | undefined,
+  legacyBaseDir: string,
+  spec: DesignSpec,
+  outputDirOverride?: string,
+): string {
+  const dir = outputDirOverride
+    ? resolve(outputDirOverride)
+    : resolveSpecsDir(runDataDir, legacyBaseDir)
+
+  mkdirSync(dir, { recursive: true })
+  const filePath = join(dir, specFileName(spec))
 
   spec.updated_date = new Date().toISOString().split('T')[0]!
   writeFileSync(filePath, JSON.stringify(spec, null, 2), 'utf-8')

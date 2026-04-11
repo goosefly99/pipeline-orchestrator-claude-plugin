@@ -34,6 +34,18 @@ export interface SynthContext {
   getItems(collection: string, itemIds: string[]): ResearchItem[]
 
   getSpecsDir(): string
+
+  /**
+   * Per-run spec persistence (Feature C). When present, takes precedence
+   * over `saveSpec` in `handleSynthSaveSpec`. Server.ts wires this to
+   * `persistSpec(runDataDir, legacyBaseDir, spec, outputDirOverride)` so
+   * callers get automatic run-scoped routing without plumbing context
+   * through the handler.
+   *
+   * Optional so older test fixtures that mock the context without this
+   * field continue to fall back to `saveSpec`.
+   */
+  persistSpec?(spec: DesignSpec, outputDirOverride?: string): string
 }
 
 // Re-export HandlerResponse for backward compatibility
@@ -183,8 +195,12 @@ export function handleSynthSaveSpec(
   if (!spec) throw new Error('spec is required')
   if (!spec.spec_id || !spec.title) throw new Error('spec must have spec_id and title')
 
-  const outputDir = (args.output_dir as string | undefined) ?? ctx.getSpecsDir()
-  const filePath = saveSpec(spec, outputDir)
+  const outputDirOverride = args.output_dir as string | undefined
+  // Feature C: prefer persistSpec (run-scoped) when the context supplies it;
+  // fall back to the legacy saveSpec so older test fixtures keep working.
+  const filePath = ctx.persistSpec
+    ? ctx.persistSpec(spec, outputDirOverride)
+    : saveSpec(spec, outputDirOverride ?? ctx.getSpecsDir())
 
   return {
     json: `Spec saved: ${filePath}\n  Title: ${spec.title}\n  Status: ${spec.status}\n  Sources: ${spec.sources?.length ?? 0}`,
