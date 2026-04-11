@@ -19,10 +19,10 @@
 | Milestone | Scope | Items | Not Started | In Progress | Complete | Blocked |
 |-----------|-------|-------|:-----------:|:-----------:|:--------:|:-------:|
 | M0 — Part 1 & Part 2 & Feature A | Quality-gates fix + 7 post-meta-run fixes + pre-init hook | 10 | 0 | 0 | 10 | 0 |
-| M1 — Feature C | Per-run hierarchical artifact directories | 10 | 2 | 0 | 8 | 0 |
+| M1 — Feature C | Per-run hierarchical artifact directories | 10 | 1 | 0 | 9 | 0 |
 | M2 — Feature B | Pre-phase-start hook with Agent-per-phase execution | 10 | 10 | 0 | 0 | 0 |
 | M3 — Part 6 | Hooks code-review fixes (harness runtime) | 12 | 12 | 0 | 0 | 0 |
-| **Total** | | **42** | **24** | **0** | **18** | **0** |
+| **Total** | | **42** | **23** | **0** | **19** | **0** |
 
 **Current work focus:** M1 → M2 → M3 (M3 can execute in parallel with M1/M2 since it
 targets `hooks/scripts/` rather than the TypeScript MCP server).
@@ -98,7 +98,7 @@ top-level paths when `state.run_data_dir` is absent (pre-Feature-C runs).
 | C6 | Route synth spec writes through `getArtifactDir(state.run_data_dir, 'specs')`. | `synth-handlers.ts`, `synth.ts` | C1, C2 | Complete |
 | C7 | Route scaffold-document writes through `getArtifactDir(state.run_data_dir, 'scaffold')`. Update `handleRegisterScaffoldOutputs` to accept run-scoped base dir. Update `artifact-handlers.ts` (`pipeline_store_artifact`, `pipeline_load_artifact`, `pipeline_list_artifacts`) to resolve paths via the run-scoped helpers for new runs. | `misc-handlers.ts`, `artifact-handlers.ts` | C1, C2 | Complete |
 | C8 | Write `run-state.json` and `events.jsonl` under `state.run_data_dir` directly (no extra subfolder). Implement legacy fallback in `pipeline_list_artifacts`: if `state.run_data_dir` is absent, resolve from `pipeline_mcp_data/<subtype>/` top-level. | `run-state.ts`, `artifact-handlers.ts` | C7 | Complete |
-| C9 | New integration test `tests/per-run-paths.test.ts`: (a) unit tests on `sanitizeRunName` incl. Windows-unsafe chars and Unicode, (b) two-run sequence asserting zero path collisions under `pipeline_mcp_data/runs/{name-timestamp}/`, (c) legacy-fallback test seeding a pre-Feature-C run-state and asserting `pipeline_list_artifacts` still resolves legacy top-level paths. | `tests/per-run-paths.test.ts` (new) | C1–C8 | Not Started |
+| C9 | New integration test `tests/per-run-paths.test.ts`: (a) unit tests on `sanitizeRunName` incl. Windows-unsafe chars and Unicode, (b) two-run sequence asserting zero path collisions under `pipeline_mcp_data/runs/{name-timestamp}/`, (c) legacy-fallback test seeding a pre-Feature-C run-state and asserting `pipeline_list_artifacts` still resolves legacy top-level paths. | `tests/per-run-paths.test.ts` (new) | C1–C8 | Complete |
 | C10 | Grep tests dir for hardcoded `pipeline_mcp_data/<subtype>/` literals and migrate them to the helpers. Add migration note to `AGENTS.md` under a new `## Per-Run Artifact Directories` subsection explaining cutover semantics. | `tests/**/*.test.ts`, `AGENTS.md` | C1–C9 | Not Started |
 
 ### Verification (M1)
