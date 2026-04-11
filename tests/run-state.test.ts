@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
   initRun, startPhase, completePhase, failPhase, skipPhase, retryPhase, loadRunState, addArtifact,
@@ -36,6 +36,51 @@ describe('initRun', () => {
   it('persists state to disk', () => {
     initRun('test-run-2', '1.0.0', ['discovery'], tempDir)
     assert.ok(existsSync(join(tempDir, 'run-state.json')))
+  })
+
+  it('sets run_data_dir when run_parameters.run_name and run_directory_timestamp are present', () => {
+    const baseDir = join(tempDir, 'test-base')
+    const stateDir = join(baseDir, 'runs', 'run-001')
+    const state = initRun('run-001', 'v1', ['phase-a'], stateDir, {
+      run_name: 'My Test Run',
+      run_directory_timestamp: '2026-04-10T12:34:56.789Z',
+    })
+
+    assert.ok(state.run_data_dir, 'run_data_dir should be defined')
+    // Must live under {baseDir}/runs/... (cross-platform assertion via path.sep)
+    const runsPrefix = join(baseDir, 'runs') + sep
+    assert.ok(
+      state.run_data_dir!.startsWith(runsPrefix),
+      `expected run_data_dir to start with ${runsPrefix}, got ${state.run_data_dir}`,
+    )
+    // Sanitized run name and sanitized timestamp should appear in the final segment.
+    assert.ok(
+      state.run_data_dir!.includes('my-test-run'),
+      `expected run_data_dir to include sanitized name 'my-test-run', got ${state.run_data_dir}`,
+    )
+    assert.ok(
+      state.run_data_dir!.includes('2026-04-10T12-34-56-789Z'),
+      `expected run_data_dir to include sanitized timestamp '2026-04-10T12-34-56-789Z', got ${state.run_data_dir}`,
+    )
+  })
+
+  it('leaves run_data_dir undefined and warns when parameters absent', () => {
+    const originalWarn = console.warn
+    const warnings: string[] = []
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(a => String(a)).join(' '))
+    }
+    try {
+      const stateDir = join(tempDir, 'test-base', 'runs', 'run-002')
+      const state = initRun('run-002', 'v1', ['phase-a'], stateDir)
+      assert.equal(state.run_data_dir, undefined)
+      assert.ok(
+        warnings.some(w => w.includes('run-002') && w.includes('parameterization inactive')),
+        `expected warn containing 'run-002' and 'parameterization inactive', got ${JSON.stringify(warnings)}`,
+      )
+    } finally {
+      console.warn = originalWarn
+    }
   })
 })
 

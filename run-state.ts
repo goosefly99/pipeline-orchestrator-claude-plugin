@@ -1,8 +1,9 @@
 import { writeFileSync, readFileSync, mkdirSync, existsSync, renameSync, copyFileSync, unlinkSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { PipelineError } from './types.ts'
 import type { RunState, PhaseState, ArtifactRef, PipelineConfig, PipelineRunParameters } from './types.ts'
 import { resolveNextPhases } from './dag.ts'
+import { getRunDataDir } from './storage.ts'
 
 const STATE_FILE = 'run-state.json'
 
@@ -67,6 +68,19 @@ export function initRun(
   // Empty {} is omitted so legacy runs and runs without parameters stay clean.
   if (runParameters && Object.keys(runParameters).length > 0) {
     state.run_parameters = runParameters
+  }
+
+  // Feature C: compute per-run data directory from run_name + timestamp.
+  // Requires the caller invariant `stateDir === {baseDir}/runs/{runId}` so
+  // we can recover baseDir via two dirname() calls. Falls back to legacy
+  // stateDir layout (with a warning) when parameterization is incomplete.
+  if (runParameters?.run_name && runParameters?.run_directory_timestamp) {
+    const baseDir = dirname(dirname(stateDir))
+    state.run_data_dir = getRunDataDir(baseDir, runParameters.run_name, runParameters.run_directory_timestamp)
+  } else {
+    console.warn(
+      `[pipeline] initRun(${runId}): run_data_dir parameterization inactive (run_name and/or run_directory_timestamp absent). Falling back to legacy ${stateDir}.`,
+    )
   }
 
   persist(state, stateDir)

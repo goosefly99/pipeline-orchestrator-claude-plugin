@@ -77,6 +77,7 @@ export interface RunState {
   updated_at: string
   completed_at?: string
   run_parameters?: PipelineRunParameters
+  run_data_dir?: string
   status: 'initialized' | 'running' | 'completed' | 'failed'
   phases: Record<string, PhaseState>
   available_artifacts: ArtifactRef[]
