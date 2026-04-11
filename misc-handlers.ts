@@ -1,13 +1,13 @@
 // misc-handlers.ts — Ingestion, KB, codebase analysis, validate-run, feature-request, web-search, and get-config handlers
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, statSync, readdirSync } from 'node:fs'
 import { isAbsolute, resolve, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { parse as parseTOML, stringify as stringifyTOML } from 'smol-toml'
 import { ingestDocumentsAsync } from './ingest.ts'
 import { executeWebSearch } from './web-search.ts'
 import { analyzeCodebase } from './codebase-analyzer.ts'
-import { queryItems } from './collections.ts'
+import { queryItems, persistRawCollection } from './collections.ts'
 import { BM25Index, bm25IndexDir } from './bm25.ts'
 import {
   createKBClient,
@@ -207,15 +207,18 @@ export async function handleIngestDocuments(
     }
   }
 
-  // Write collection to disk first — keeps MCP response under 10KB
+  // Write collection to disk first — keeps MCP response under 10KB.
+  // Feature C: route through run_data_dir when set, legacy fallback otherwise.
   const activeRun = ctx.getActiveRun()
-  const baseDir = activeRun
+  const legacyBaseDir = activeRun
     ? ctx.baseDirFromRunDir(ctx.getActiveRunDir())
     : resolve(ctx.getProjectRoot(), ctx.getConfigStorageBaseDir())
-  const rawDir = join(baseDir, 'collections', 'raw')
-  mkdirSync(rawDir, { recursive: true })
-  const artifactPath = join(rawDir, `${collection.collection_id}.json`)
-  writeFileSync(artifactPath, JSON.stringify(collection, null, 2))
+  const artifactPath = persistRawCollection(
+    activeRun?.run_data_dir,
+    legacyBaseDir,
+    collection,
+    `${collection.collection_id}.json`,
+  )
 
   const sources =
     collection.source_runs

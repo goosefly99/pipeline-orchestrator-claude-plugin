@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
@@ -10,6 +10,9 @@ import {
   getItems,
   getCollection,
   listCollections,
+  resolveCollectionsDir,
+  persistRawCollection,
+  persistCuratedCollection,
 } from '../collections.ts'
 
 let tempDir: string
@@ -335,5 +338,163 @@ describe('listCollections', () => {
     assert.equal(entry!.item_count, 1)
     assert.ok(Array.isArray(entry!.available_tags))
     assert.ok(typeof entry!.field_map === 'object')
+  })
+})
+
+// ── Per-run collection write helpers (Feature C) ─────────────
+
+describe('resolveCollectionsDir', () => {
+  it('routes to run_data_dir/collections/raw when runDataDir is set', () => {
+    const runDataDir = join(tempDir, 'runs', 'my-run-2026-04-10')
+    const dir = resolveCollectionsDir(runDataDir, join(tempDir, 'legacy'), 'raw')
+    assert.equal(dir, join(runDataDir, 'collections', 'raw'))
+  })
+
+  it('routes to run_data_dir/collections/curated when runDataDir is set', () => {
+    const runDataDir = join(tempDir, 'runs', 'my-run-2026-04-10')
+    const dir = resolveCollectionsDir(runDataDir, join(tempDir, 'legacy'), 'curated')
+    assert.equal(dir, join(runDataDir, 'collections', 'curated'))
+  })
+
+  it('falls back to legacyBaseDir/collections/raw when runDataDir is undefined', () => {
+    const legacyBaseDir = join(tempDir, 'legacy')
+    const dir = resolveCollectionsDir(undefined, legacyBaseDir, 'raw')
+    assert.equal(dir, join(legacyBaseDir, 'collections', 'raw'))
+  })
+
+  it('falls back to legacyBaseDir/collections/curated when runDataDir is undefined', () => {
+    const legacyBaseDir = join(tempDir, 'legacy')
+    const dir = resolveCollectionsDir(undefined, legacyBaseDir, 'curated')
+    assert.equal(dir, join(legacyBaseDir, 'collections', 'curated'))
+  })
+
+  it('treats empty-string runDataDir as absent (falsy) and falls back', () => {
+    const legacyBaseDir = join(tempDir, 'legacy')
+    const dir = resolveCollectionsDir('', legacyBaseDir, 'raw')
+    assert.equal(dir, join(legacyBaseDir, 'collections', 'raw'))
+  })
+})
+
+describe('persistRawCollection', () => {
+  it('writes under runDataDir/collections/raw when runDataDir is set', () => {
+    const runDataDir = join(tempDir, 'runs', 'persist-raw-a')
+    const collection = { collection_id: 'raw-abc', status: 'raw', items: [] }
+
+    const writtenPath = persistRawCollection(
+      runDataDir,
+      join(tempDir, 'legacy'),
+      collection,
+      'raw-abc.json',
+    )
+
+    const expected = join(runDataDir, 'collections', 'raw', 'raw-abc.json')
+    assert.equal(writtenPath, expected)
+    assert.ok(existsSync(expected), `expected file at ${expected}`)
+    const parsed = JSON.parse(readFileSync(expected, 'utf-8')) as Record<string, unknown>
+    assert.equal(parsed.collection_id, 'raw-abc')
+    assert.equal(parsed.status, 'raw')
+  })
+
+  it('falls back to legacyBaseDir/collections/raw when runDataDir is absent', () => {
+    const legacyBaseDir = join(tempDir, 'legacy-base-raw')
+    const collection = { collection_id: 'legacy-raw', items: [] }
+
+    const writtenPath = persistRawCollection(
+      undefined,
+      legacyBaseDir,
+      collection,
+      'legacy-raw.json',
+    )
+
+    const expected = join(legacyBaseDir, 'collections', 'raw', 'legacy-raw.json')
+    assert.equal(writtenPath, expected)
+    assert.ok(existsSync(expected), `expected file at ${expected}`)
+  })
+
+  it('creates the target directory tree if it does not exist', () => {
+    const runDataDir = join(tempDir, 'runs', 'deep', 'nested', 'target')
+    const collection = { collection_id: 'deep', items: [] }
+
+    persistRawCollection(runDataDir, tempDir, collection, 'deep.json')
+
+    const dir = join(runDataDir, 'collections', 'raw')
+    assert.ok(existsSync(dir), `expected mkdir to create ${dir}`)
+  })
+
+  it('overwrites an existing file without raising', () => {
+    const runDataDir = join(tempDir, 'runs', 'overwrite-ok')
+    const first = { collection_id: 'x', version: 1 }
+    const second = { collection_id: 'x', version: 2 }
+
+    const path1 = persistRawCollection(runDataDir, tempDir, first, 'x.json')
+    const path2 = persistRawCollection(runDataDir, tempDir, second, 'x.json')
+
+    assert.equal(path1, path2)
+    const parsed = JSON.parse(readFileSync(path2, 'utf-8')) as Record<string, unknown>
+    assert.equal(parsed.version, 2, 'second write should overwrite the first')
+  })
+})
+
+describe('persistCuratedCollection', () => {
+  it('writes under runDataDir/collections/curated when runDataDir is set', () => {
+    const runDataDir = join(tempDir, 'runs', 'persist-curated-a')
+    const collection = { collection_id: 'curated-1', status: 'curated', items: [] }
+
+    const writtenPath = persistCuratedCollection(
+      runDataDir,
+      join(tempDir, 'legacy'),
+      collection,
+      'curated-1.json',
+    )
+
+    const expected = join(runDataDir, 'collections', 'curated', 'curated-1.json')
+    assert.equal(writtenPath, expected)
+    assert.ok(existsSync(expected))
+    const parsed = JSON.parse(readFileSync(expected, 'utf-8')) as Record<string, unknown>
+    assert.equal(parsed.collection_id, 'curated-1')
+    assert.equal(parsed.status, 'curated')
+  })
+
+  it('falls back to legacyBaseDir/collections/curated when runDataDir is absent', () => {
+    const legacyBaseDir = join(tempDir, 'legacy-base-curated')
+    const collection = { collection_id: 'legacy-curated', items: [] }
+
+    const writtenPath = persistCuratedCollection(
+      undefined,
+      legacyBaseDir,
+      collection,
+      'legacy-curated.json',
+    )
+
+    const expected = join(legacyBaseDir, 'collections', 'curated', 'legacy-curated.json')
+    assert.equal(writtenPath, expected)
+    assert.ok(existsSync(expected))
+  })
+
+  it('raw and curated writes for the same run land in sibling directories', () => {
+    const runDataDir = join(tempDir, 'runs', 'both-subtypes')
+    const raw = { collection_id: 'r', status: 'raw' }
+    const curated = { collection_id: 'c', status: 'curated' }
+
+    const rawPath = persistRawCollection(runDataDir, tempDir, raw, 'r.json')
+    const curatedPath = persistCuratedCollection(runDataDir, tempDir, curated, 'c.json')
+
+    assert.equal(rawPath, join(runDataDir, 'collections', 'raw', 'r.json'))
+    assert.equal(curatedPath, join(runDataDir, 'collections', 'curated', 'c.json'))
+    assert.ok(existsSync(rawPath))
+    assert.ok(existsSync(curatedPath))
+  })
+
+  it('overwrites an existing curated file without raising', () => {
+    const runDataDir = join(tempDir, 'runs', 'curated-overwrite')
+    const first = { collection_id: 'x', version: 1 }
+    const second = { collection_id: 'x', version: 2 }
+
+    const path1 = persistCuratedCollection(runDataDir, tempDir, first, 'x.json')
+    const path2 = persistCuratedCollection(runDataDir, tempDir, second, 'x.json')
+
+    assert.equal(path1, path2)
+    const parsed = JSON.parse(readFileSync(path2, 'utf-8')) as Record<string, unknown>
+    assert.equal(parsed.version, 2, 'second write should overwrite the first')
   })
 })

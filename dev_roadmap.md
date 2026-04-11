@@ -19,10 +19,10 @@
 | Milestone | Scope | Items | Not Started | In Progress | Complete | Blocked |
 |-----------|-------|-------|:-----------:|:-----------:|:--------:|:-------:|
 | M0 — Part 1 & Part 2 & Feature A | Quality-gates fix + 7 post-meta-run fixes + pre-init hook | 10 | 0 | 0 | 10 | 0 |
-| M1 — Feature C | Per-run hierarchical artifact directories | 10 | 8 | 0 | 2 | 0 |
+| M1 — Feature C | Per-run hierarchical artifact directories | 10 | 7 | 0 | 3 | 0 |
 | M2 — Feature B | Pre-phase-start hook with Agent-per-phase execution | 10 | 10 | 0 | 0 | 0 |
 | M3 — Part 6 | Hooks code-review fixes (harness runtime) | 12 | 12 | 0 | 0 | 0 |
-| **Total** | | **42** | **30** | **0** | **12** | **0** |
+| **Total** | | **42** | **29** | **0** | **13** | **0** |
 
 **Current work focus:** M1 → M2 → M3 (M3 can execute in parallel with M1/M2 since it
 targets `hooks/scripts/` rather than the TypeScript MCP server).
@@ -92,7 +92,7 @@ top-level paths when `state.run_data_dir` is absent (pre-Feature-C runs).
 |----|-------------|--------------|:----------:|:------:|
 | C1 | Add path helpers: `sanitizeRunName`, `sanitizeRunTimestamp`, `getRunDataDir`, `getArtifactDir`. Define `ArtifactSubtype` union (`'collections/curated' \| 'collections/raw' \| 'debates' \| 'overviews' \| 'specs' \| 'scaffold'`). Sanitization: `/[^a-zA-Z0-9-]/g → '-'`, lowercase, trim trailing hyphens, truncate 64 chars; timestamp: ISO with `:` and `.` → `-`. | `storage.ts`, `tests/storage.test.ts` | — | Complete |
 | C2 | In `initRun`, compute `state.run_data_dir` from `run_parameters.run_name` + `run_parameters.run_directory_timestamp`. Fall back to legacy `runs/{run_id}/` when parameters are absent and emit a warning. Persist into run-state. Add `run_data_dir?: string` to `RunState` in `types.ts`. | `run-state.ts`, `types.ts` | C1 | Complete |
-| C3 | Route curated/raw collection writes through `getArtifactDir(state.run_data_dir, 'collections/curated' \| 'collections/raw')`. | `collections.ts` | C1, C2 | Not Started |
+| C3 | Route curated/raw collection writes through `getArtifactDir(state.run_data_dir, 'collections/curated' \| 'collections/raw')`. | `collections.ts`, `misc-handlers.ts` | C1, C2 | Complete |
 | C4 | Route concept overview writes through `getArtifactDir(state.run_data_dir, 'overviews')`. Update both the embedded and standalone code paths. | `concepts.ts`, `cc-handlers.ts` | C1, C2 | Not Started |
 | C5 | Route debate transcript writes through `getArtifactDir(state.run_data_dir, 'debates')`. | `debate-handlers.ts`, `debate.ts` | C1, C2 | Not Started |
 | C6 | Route synth spec writes through `getArtifactDir(state.run_data_dir, 'specs')`. | `synth-handlers.ts`, `synth.ts` | C1, C2 | Not Started |

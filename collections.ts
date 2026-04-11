@@ -1,6 +1,7 @@
-import { readFileSync } from 'node:fs'
-import { resolve, basename } from 'node:path'
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { resolve, basename, join } from 'node:path'
 import type { FieldMap, ResearchItem, ResearchCollection } from './cc-types.ts'
+import { getArtifactDir } from './storage.ts'
 
 // ── In-memory store ─────────────────────────────────────────────
 
@@ -222,4 +223,83 @@ export function listCollections(): {
     available_tags: c.available_tags,
     field_map: c.field_map,
   }))
+}
+
+// ── Per-run collection write helpers (Feature C) ────────────────
+//
+// Route collection persistence through `state.run_data_dir` when set,
+// falling back to `{legacyBaseDir}/collections/<subtype>/` when a run
+// predates Feature-A parameterization. Preserves the historical
+// "disk-first, overwrite-ok" semantics of the ingest path — collision
+// is avoided in practice by the random-hex suffix on collection IDs.
+
+/**
+ * Resolve the on-disk directory for a collection subtype.
+ *
+ * - When `runDataDir` is a non-empty string, returns
+ *   `getArtifactDir(runDataDir, 'collections/<subtype>')`.
+ * - Otherwise falls back to `{legacyBaseDir}/collections/<subtype>`.
+ */
+export function resolveCollectionsDir(
+  runDataDir: string | undefined,
+  legacyBaseDir: string,
+  subtype: 'raw' | 'curated',
+): string {
+  if (runDataDir) {
+    return getArtifactDir(runDataDir, subtype === 'raw' ? 'collections/raw' : 'collections/curated')
+  }
+  return join(legacyBaseDir, 'collections', subtype)
+}
+
+function writeCollectionFile(dir: string, fileName: string, collection: unknown): string {
+  mkdirSync(dir, { recursive: true })
+  const filePath = join(dir, fileName)
+  writeFileSync(filePath, JSON.stringify(collection, null, 2), 'utf-8')
+  return filePath
+}
+
+/**
+ * Persist a raw (ingested) collection under the run's data directory.
+ *
+ * When `runDataDir` is set, writes to `{runDataDir}/collections/raw/{fileName}`.
+ * Otherwise falls back to `{legacyBaseDir}/collections/raw/{fileName}` so
+ * pre-Feature-C runs continue to use the top-level layout.
+ *
+ * @returns the absolute path written.
+ */
+export function persistRawCollection(
+  runDataDir: string | undefined,
+  legacyBaseDir: string,
+  collection: unknown,
+  fileName: string,
+): string {
+  return writeCollectionFile(
+    resolveCollectionsDir(runDataDir, legacyBaseDir, 'raw'),
+    fileName,
+    collection,
+  )
+}
+
+/**
+ * Persist a curated collection under the run's data directory.
+ * Same semantics as {@link persistRawCollection} but targets the
+ * `collections/curated` subtype.
+ *
+ * Note: curated collection writes currently flow through
+ * `pipeline_store_artifact` (artifact-handlers.ts). This helper is
+ * defined alongside the raw variant for symmetry and is expected to
+ * be adopted by C7 when the generic artifact store path is migrated
+ * to run-scoped resolution.
+ */
+export function persistCuratedCollection(
+  runDataDir: string | undefined,
+  legacyBaseDir: string,
+  collection: unknown,
+  fileName: string,
+): string {
+  return writeCollectionFile(
+    resolveCollectionsDir(runDataDir, legacyBaseDir, 'curated'),
+    fileName,
+    collection,
+  )
 }
