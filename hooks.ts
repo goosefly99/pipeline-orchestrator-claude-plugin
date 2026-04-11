@@ -3,7 +3,7 @@
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { resolve, normalize, isAbsolute, join } from 'node:path'
-import type { HookConfig, HookTrigger, PipelineRunParameters } from './types.ts'
+import type { AgentDirective, HookConfig, HookTrigger, PipelineRunParameters } from './types.ts'
 import { PipelineError } from './types.ts'
 
 /** Context passed to hook commands via PIPELINE_HOOK_CONTEXT env var. */
@@ -44,6 +44,65 @@ export interface HookResult {
   stdout?: string
   stderr?: string
   error?: string
+  /**
+   * Feature B directive parsed from the hook's JSON stdout. Present only
+   * when the hook emitted a JSON object containing a well-formed
+   * `agent_directive` with all four required string fields
+   * (`subagent_type`, `model`, `description`, `prompt`). Feature B's
+   * `handleStartPhase` forwards this into the `pipeline_start_phase` MCP
+   * tool response so the client can spawn the phase subagent.
+   */
+  agent_directive?: AgentDirective
+}
+
+/**
+ * Parse an `AgentDirective` from a hook's raw stdout string.
+ *
+ * The stdout must be a JSON object literal containing an `agent_directive`
+ * field whose value has all four required string fields (`subagent_type`,
+ * `model`, `description`, `prompt`). An optional `isolation: 'worktree'`
+ * is preserved when present; any other `isolation` value is dropped.
+ *
+ * Returns `undefined` when the stdout is absent, empty, not JSON, missing
+ * the `agent_directive` field, or the directive fails shape validation.
+ * This helper is intentionally lenient so existing non-directive hooks
+ * (plain text output, JSON without a directive) pass through unchanged —
+ * only Feature B `pre_start` hooks that opt in by emitting the correctly
+ * shaped JSON attach a directive to the `HookResult`.
+ */
+export function parseAgentDirective(stdout: string | undefined): AgentDirective | undefined {
+  if (!stdout) return undefined
+  const trimmed = stdout.trim()
+  if (trimmed.length === 0) return undefined
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch {
+    return undefined
+  }
+
+  if (!parsed || typeof parsed !== 'object') return undefined
+  const root = parsed as Record<string, unknown>
+  const raw = root.agent_directive
+  if (!raw || typeof raw !== 'object') return undefined
+
+  const d = raw as Record<string, unknown>
+  const { subagent_type, model, description, prompt } = d
+  if (
+    typeof subagent_type !== 'string' ||
+    typeof model !== 'string' ||
+    typeof description !== 'string' ||
+    typeof prompt !== 'string'
+  ) {
+    return undefined
+  }
+
+  const directive: AgentDirective = { subagent_type, model, description, prompt }
+  if (d.isolation === 'worktree') {
+    directive.isolation = 'worktree'
+  }
+  return directive
 }
 
 const MAX_CONTEXT_BYTES = 65536 // 64KB cap on env var context
@@ -217,13 +276,17 @@ export function runHooks(
         stdio: ['pipe', 'pipe', 'pipe'],
       })
 
-      results.push({
+      const trimmedStdout = typeof stdout === 'string' ? stdout.trim() : undefined
+      const directive = parseAgentDirective(trimmedStdout)
+      const result: HookResult = {
         command: hook.command,
         trigger,
         phase: context.phase,
         success: true,
-        stdout: typeof stdout === 'string' ? stdout.trim() : undefined,
-      })
+        stdout: trimmedStdout,
+      }
+      if (directive) result.agent_directive = directive
+      results.push(result)
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new Error(String(err))
       const result: HookResult = {

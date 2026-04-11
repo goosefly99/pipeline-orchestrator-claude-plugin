@@ -1,9 +1,9 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, basename, join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { validateHookPath, matchesPhase, runHooks } from '../hooks.ts'
+import { validateHookPath, matchesPhase, runHooks, parseAgentDirective } from '../hooks.ts'
 import { appendEvent } from '../lifecycle-handlers.ts'
 import { loadHooksConfig } from '../toml-loader.ts'
 import { PipelineError } from '../types.ts'
@@ -130,6 +130,203 @@ describe('runHooks', () => {
     assert.equal(results.length, 1)
     assert.equal(results[0].success, false)
     assert.ok(results[0].error!.includes('traversal'))
+  })
+})
+
+// ── parseAgentDirective (Feature B B2) ──────────────────────
+
+describe('parseAgentDirective', () => {
+  const valid = {
+    agent_directive: {
+      subagent_type: 'general-purpose',
+      model: 'claude-sonnet-4-6',
+      description: 'discovery execution',
+      prompt: 'Run phase discovery and call pipeline_complete_phase when done.',
+    },
+  }
+
+  it('returns undefined for undefined stdout', () => {
+    assert.equal(parseAgentDirective(undefined), undefined)
+  })
+
+  it('returns undefined for empty string', () => {
+    assert.equal(parseAgentDirective(''), undefined)
+  })
+
+  it('returns undefined for whitespace-only stdout', () => {
+    assert.equal(parseAgentDirective('   \n  \t '), undefined)
+  })
+
+  it('returns undefined for non-JSON stdout', () => {
+    assert.equal(parseAgentDirective('hello world'), undefined)
+  })
+
+  it('returns undefined for JSON that is not an object', () => {
+    assert.equal(parseAgentDirective('"just a string"'), undefined)
+    assert.equal(parseAgentDirective('42'), undefined)
+    assert.equal(parseAgentDirective('null'), undefined)
+    assert.equal(parseAgentDirective('[1, 2, 3]'), undefined)
+  })
+
+  it('returns undefined when agent_directive key is missing', () => {
+    assert.equal(parseAgentDirective('{"parameters": {}}'), undefined)
+  })
+
+  it('returns undefined when agent_directive is null', () => {
+    assert.equal(parseAgentDirective('{"agent_directive": null}'), undefined)
+  })
+
+  it('returns undefined when agent_directive is not an object', () => {
+    assert.equal(parseAgentDirective('{"agent_directive": "nope"}'), undefined)
+    assert.equal(parseAgentDirective('{"agent_directive": 7}'), undefined)
+  })
+
+  it('returns undefined when any required field is missing', () => {
+    for (const field of ['subagent_type', 'model', 'description', 'prompt']) {
+      const clone = JSON.parse(JSON.stringify(valid))
+      delete clone.agent_directive[field]
+      assert.equal(parseAgentDirective(JSON.stringify(clone)), undefined, `missing ${field} should fail`)
+    }
+  })
+
+  it('returns undefined when any required field is not a string', () => {
+    for (const field of ['subagent_type', 'model', 'description', 'prompt']) {
+      const clone = JSON.parse(JSON.stringify(valid))
+      clone.agent_directive[field] = 42
+      assert.equal(parseAgentDirective(JSON.stringify(clone)), undefined, `numeric ${field} should fail`)
+    }
+  })
+
+  it('parses a valid directive with no isolation', () => {
+    const result = parseAgentDirective(JSON.stringify(valid))
+    assert.deepEqual(result, {
+      subagent_type: 'general-purpose',
+      model: 'claude-sonnet-4-6',
+      description: 'discovery execution',
+      prompt: 'Run phase discovery and call pipeline_complete_phase when done.',
+    })
+  })
+
+  it('preserves isolation: "worktree" when present', () => {
+    const withWorktree = JSON.parse(JSON.stringify(valid))
+    withWorktree.agent_directive.isolation = 'worktree'
+    const result = parseAgentDirective(JSON.stringify(withWorktree))
+    assert.equal(result?.isolation, 'worktree')
+  })
+
+  it('drops non-worktree isolation values', () => {
+    const withOther = JSON.parse(JSON.stringify(valid))
+    withOther.agent_directive.isolation = 'sandbox'
+    const result = parseAgentDirective(JSON.stringify(withOther))
+    assert.equal(result?.isolation, undefined)
+  })
+
+  it('tolerates surrounding whitespace around the JSON', () => {
+    const padded = `\n\n  ${JSON.stringify(valid)}  \n`
+    const result = parseAgentDirective(padded)
+    assert.equal(result?.subagent_type, 'general-purpose')
+  })
+
+  it('ignores extra unknown fields on the directive', () => {
+    const withExtra = JSON.parse(JSON.stringify(valid))
+    withExtra.agent_directive.debug = true
+    withExtra.agent_directive.extra_note = 'ignored'
+    const result = parseAgentDirective(JSON.stringify(withExtra))
+    // Only the four required fields should be forwarded — extras are dropped.
+    assert.deepEqual(result, {
+      subagent_type: 'general-purpose',
+      model: 'claude-sonnet-4-6',
+      description: 'discovery execution',
+      prompt: 'Run phase discovery and call pipeline_complete_phase when done.',
+    })
+  })
+})
+
+// ── runHooks attaches agent_directive from stdout JSON ─────
+
+describe('runHooks agent_directive passthrough', () => {
+  /**
+   * Return a {projectRoot, command} pair that lets `validateHookPath` accept
+   * the currently-running `node` binary as a hook command. Mirrors the
+   * `nodeHookCommand` helper used in hook-idempotency.test.ts and
+   * pre-init-hook.test.ts — projectRoot is the node binary's directory,
+   * command is its basename, and the real hook script is passed via args[0].
+   */
+  function nodeHookCommand(): { projectRoot: string; command: string } {
+    return {
+      projectRoot: dirname(process.execPath),
+      command: basename(process.execPath),
+    }
+  }
+
+  it('attaches agent_directive when pre_start hook emits a valid JSON payload', () => {
+    const { projectRoot: hookRoot, command: nodeCommand } = nodeHookCommand()
+    const scriptPath = join(tempDir, 'pre-start-directive.mjs')
+    const payload = JSON.stringify({
+      agent_directive: {
+        subagent_type: 'general-purpose',
+        model: 'claude-opus-4-6',
+        description: 'debate execution',
+        prompt: 'Run debate and call pipeline_complete_phase on finish.',
+      },
+    })
+    writeFileSync(scriptPath, `console.log(${JSON.stringify(payload)})\n`, 'utf-8')
+
+    const hooks: HookConfig[] = [
+      {
+        trigger: 'pre_start',
+        phase_filter: '*',
+        command: nodeCommand,
+        args: [scriptPath],
+        timeout_ms: 10000,
+      },
+    ]
+    const ctx: HookContext = {
+      run_id: 'r1',
+      phase: 'debate',
+      trigger: 'pre_start',
+      project_root: hookRoot,
+      run_dir: tempDir,
+    }
+
+    const results = runHooks(hooks, 'pre_start', ctx, hookRoot)
+    assert.equal(results.length, 1)
+    assert.equal(results[0].success, true)
+    assert.deepEqual(results[0].agent_directive, {
+      subagent_type: 'general-purpose',
+      model: 'claude-opus-4-6',
+      description: 'debate execution',
+      prompt: 'Run debate and call pipeline_complete_phase on finish.',
+    })
+  })
+
+  it('leaves agent_directive undefined when a hook emits plain-text stdout', () => {
+    const { projectRoot: hookRoot, command: nodeCommand } = nodeHookCommand()
+    const scriptPath = join(tempDir, 'plain-stdout.mjs')
+    writeFileSync(scriptPath, 'console.log("hello from hook")\n', 'utf-8')
+
+    const hooks: HookConfig[] = [
+      {
+        trigger: 'pre_start',
+        phase_filter: '*',
+        command: nodeCommand,
+        args: [scriptPath],
+        timeout_ms: 10000,
+      },
+    ]
+    const ctx: HookContext = {
+      run_id: 'r1',
+      phase: 'discovery',
+      trigger: 'pre_start',
+      project_root: hookRoot,
+      run_dir: tempDir,
+    }
+
+    const results = runHooks(hooks, 'pre_start', ctx, hookRoot)
+    assert.equal(results.length, 1)
+    assert.equal(results[0].success, true)
+    assert.equal(results[0].agent_directive, undefined)
+    assert.equal(results[0].stdout, 'hello from hook')
   })
 })
 
