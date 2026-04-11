@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "codebase-requirements.json",
+  "title": "Codebase Requirements",
+  "description": "Implementation requirements extracted from an existing package codebase by Phase C (Codebase Analysis). Captures package structure, conventions, dependencies, interfaces, AGENTS.md directives, and testing patterns. Used as optional context for design synthesis, debate, validation, and implementation scaffolding.",
+  "type": "object",
+  "required": ["requirements_id", "codebase_path", "analyzed_date", "package", "structure", "conventions"],
+  "properties": {
+    "requirements_id": {
+      "type": "string",
+      "description": "Unique identifier: cr-{8char_hex}"
+    },
+    "codebase_path": {
+      "type": "string",
+      "description": "Absolute path to the analyzed package root"
+    },
+    "analyzed_date": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "package": {
+      "type": "object",
+      "required": ["name", "language"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Package or project name"
+        },
+        "language": {
+          "type": "string",
+          "description": "Primary programming language"
+        },
+        "runtime": {
+          "type": "string",
+          "description": "Runtime and version requirement (e.g., 'python 3.12+', 'node 22+')"
+        },
+        "package_manager": {
+          "type": "string",
+          "description": "Package manager in use (e.g., 'uv', 'npm', 'pnpm', 'cargo')"
+        },
+        "manifest": {
+          "type": "string",
+          "description": "Package manifest file (e.g., 'pyproject.toml', 'package.json', 'Cargo.toml')"
+        },
+        "entry_points": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Main entry point files"
+        }
+      }
+    },
+    "structure": {
+      "type": "object",
+      "properties": {
+        "src_root": {
+          "type": "string",
+          "description": "Source code root directory"
+        },
+        "test_root": {
+          "type": "string",
+          "description": "Test directory"
+        },
+        "config_root": {
+          "type": "string",
+          "description": "Configuration directory"
+        },
+        "module_pattern": {
+          "type": "string",
+          "description": "How modules/components are organized (e.g., 'src/{module_name}/')"
+        },
+        "directory_tree": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "List of significant directories in the package"
+        }
+      }
+    },
+    "conventions": {
+      "type": "object",
+      "properties": {
+        "import_style": {
+          "type": "string",
+          "description": "Import convention (e.g., 'absolute from package root', 'relative within module')"
+        },
+        "naming": {
+          "type": "string",
+          "description": "Naming conventions for modules, functions, classes, variables"
+        },
+        "type_annotations": {
+          "type": "string",
+          "description": "Type annotation requirements"
+        },
+        "docstrings": {
+          "type": "string",
+          "description": "Docstring style (e.g., 'Google', 'NumPy', 'JSDoc')"
+        },
+        "error_handling": {
+          "type": "string",
+          "description": "Error handling pattern (e.g., 'custom exception hierarchy at X')"
+        },
+        "logging": {
+          "type": "string",
+          "description": "Logging framework and configuration"
+        },
+        "additional": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Other conventions not captured by specific fields"
+        }
+      }
+    },
+    "dependencies": {
+      "type": "object",
+      "properties": {
+        "runtime": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Production dependencies"
+        },
+        "dev": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Development dependencies"
+        },
+        "forbidden": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Dependencies that must NOT be used, with reason (e.g., 'requests (use aiohttp)')"
+        }
+      }
+    },
+    "interfaces": {
+      "type": "object",
+      "description": "Existing types, extension points, and shared state that new code must work with",
+      "properties": {
+        "existing_types": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Key types/classes already defined in the codebase"
+        },
+        "extension_points": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Base classes or interfaces that new components should extend (e.g., 'src/strategies/base.py::BaseStrategy')"
+        },
+        "shared_state": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Shared state objects or singletons that new code interacts with"
+        }
+      }
+    },
+    "agents_directives": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/AgentsDirective" },
+      "description": "Directives extracted from AGENTS.md files throughout the directory tree"
+    },
+    "testing": {
+      "type": "object",
+      "properties": {
+        "framework": {
+          "type": "string",
+          "description": "Test framework (e.g., 'pytest', 'jest', 'vitest')"
+        },
+        "patterns": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Testing patterns and conventions"
+        },
+        "required_coverage": {
+          "type": "string",
+          "description": "Coverage requirements"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "AgentsDirective": {
+      "type": "object",
+      "required": ["file", "scope", "directives"],
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Path to the AGENTS.md or CLAUDE.md file"
+        },
+        "scope": {
+          "type": "string",
+          "description": "Directory scope this file applies to"
+        },
+        "directives": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Individual directives extracted from the file"
+        }
+      }
+    }
+  }
+}

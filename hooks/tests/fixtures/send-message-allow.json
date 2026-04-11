@@ -1,0 +1,9 @@
+{
+  "event": "PreToolUse",
+  "tool_name": "SendMessage",
+  "tool_input": {
+    "recipient": "user",
+    "message": "Test message"
+  },
+  "session_id": "test-session-001"
+}

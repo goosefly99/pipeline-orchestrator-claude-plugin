@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "design-spec.json",
+  "title": "Design Spec",
+  "description": "Structured implementation specification produced by Phase 3 (Design Synthesis). Contains architecture, components, implementation phases, risks, and success criteria synthesized from research and concept overviews. Extracted from the existing DesignSpec TypeScript interface in synth-mcp/types.ts.",
+  "type": "object",
+  "required": ["spec_id", "title", "created_date", "updated_date", "version", "status", "spec_type", "sources", "overview", "architecture", "implementation", "risks", "success_criteria"],
+  "properties": {
+    "spec_id": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "created_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "updated_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "version": {
+      "type": "string",
+      "description": "Semantic version. Debate refinement bumps minor; validation updates bump patch."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["draft", "review", "approved", "implemented"]
+    },
+    "domain": {
+      "type": "string",
+      "description": "Domain context (e.g., 'trading', 'web development', 'data engineering')"
+    },
+    "spec_type": {
+      "type": "string",
+      "enum": ["implementation", "architecture", "research", "comparison"]
+    },
+    "sources": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/SpecSource" }
+    },
+    "overview": {
+      "type": "object",
+      "required": ["description", "objectives", "constraints", "assumptions"],
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Comprehensive description of what this spec defines and why"
+        },
+        "objectives": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "constraints": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "assumptions": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "architecture": {
+      "type": "object",
+      "required": ["components", "data_flow", "integration_points"],
+      "properties": {
+        "components": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/SpecComponent" }
+        },
+        "data_flow": {
+          "type": "string",
+          "description": "Description of how data moves between components"
+        },
+        "integration_points": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "External systems, APIs, and services this spec integrates with"
+        }
+      }
+    },
+    "implementation": {
+      "type": "object",
+      "required": ["phases", "tech_stack", "complexity"],
+      "properties": {
+        "phases": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/SpecPhase" }
+        },
+        "tech_stack": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "complexity": {
+          "type": "string",
+          "enum": ["low", "medium", "high"]
+        }
+      }
+    },
+    "risks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/SpecRisk" }
+    },
+    "success_criteria": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "notes": {
+      "type": "string",
+      "default": ""
+    }
+  },
+  "$defs": {
+    "SpecSource": {
+      "type": "object",
+      "required": ["collection", "item_id", "title", "relevance"],
+      "properties": {
+        "collection": { "type": "string" },
+        "item_id": { "type": "string" },
+        "title": { "type": "string" },
+        "relevance": {
+          "type": "string",
+          "description": "Why this source item is relevant to this spec"
+        }
+      }
+    },
+    "SpecComponent": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "description": {
+          "type": "string",
+          "description": "Component description (used when 'purpose' is not present)"
+        },
+        "purpose": {
+          "type": "string",
+          "description": "What this component does (legacy field name, equivalent to description)"
+        },
+        "responsibilities": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Detailed list of component responsibilities"
+        },
+        "inputs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "outputs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "dependencies": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "SpecPhase": {
+      "type": "object",
+      "required": ["phase", "name", "tasks", "deliverables"],
+      "properties": {
+        "phase": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "name": { "type": "string" },
+        "tasks": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "deliverables": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "SpecRisk": {
+      "type": "object",
+      "required": ["description", "severity", "mitigation"],
+      "properties": {
+        "description": { "type": "string" },
+        "severity": {
+          "type": "string",
+          "enum": ["low", "medium", "high"]
+        },
+        "mitigation": { "type": "string" }
+      }
+    }
+  }
+}

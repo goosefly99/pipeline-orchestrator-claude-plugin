@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "scaffold-document.json",
+  "title": "Scaffold Document",
+  "description": "A single document produced by the implementation_scaffold phase (e.g. an implementation plan, scaffold index, or proposed source diff). Scaffold documents record planning and proposed-change artifacts without modifying source files. One scaffold-document artifact is registered per file written to pipeline_mcp_data/scaffold/.",
+  "type": "object",
+  "required": ["filename", "document_type", "generated_at"],
+  "properties": {
+    "filename": {
+      "type": "string",
+      "description": "File name of the scaffold document (e.g. 'IMPLEMENTATION-PLAN.md')"
+    },
+    "document_type": {
+      "type": "string",
+      "enum": ["plan", "index", "proposed-diff", "other"],
+      "description": "Category of the scaffold document. 'plan' = implementation plan, 'index' = running index across scaffold runs, 'proposed-diff' = proposed markdown/source patch, 'other' = any other scaffold output."
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 timestamp when the document was generated"
+    },
+    "byte_size": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Size of the document in bytes. Nullable because some scaffold writers do not record size at generation time."
+    },
+    "path": {
+      "type": "string",
+      "description": "Repository-relative path to the document (e.g. 'pipeline_mcp_data/scaffold/IMPLEMENTATION-PLAN.md')"
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable description of the document's purpose and contents"
+    },
+    "status": {
+      "type": "string",
+      "description": "Free-form status string (e.g. 'proposed — not yet applied', 'complete', 'mixed — Part 1 APPLIED; Parts 2-5 PROPOSED')"
+    }
+  }
+}

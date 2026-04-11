@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kb-query-log.json",
+  "title": "Knowledge Base Query Log",
+  "description": "Audit trail of knowledge base queries made during a pipeline phase. Records what was queried, what results were returned, and how they influenced decisions. Not a pipeline artifact per se, but saved alongside run artifacts for traceability.",
+  "type": "object",
+  "required": ["run_id", "phase", "queries"],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "description": "ID of the pipeline run"
+    },
+    "phase": {
+      "type": "string",
+      "description": "Phase during which these queries were made"
+    },
+    "debate_transcript_id": {
+      "type": "string",
+      "description": "If queries were made during a debate, the transcript ID"
+    },
+    "queries": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/KBQuery" }
+    }
+  },
+  "$defs": {
+    "KBQuery": {
+      "type": "object",
+      "required": ["timestamp", "source", "query_type"],
+      "properties": {
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "source": {
+          "type": "string",
+          "description": "Name of the knowledge base source queried"
+        },
+        "query_type": {
+          "type": "string",
+          "enum": ["vector_search", "sql_template", "sql_raw"],
+          "description": "Type of query executed"
+        },
+        "query": {
+          "type": "string",
+          "description": "The search string (vector) or template name (SQL)"
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Query parameters (for SQL templates)"
+        },
+        "results_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of results returned"
+        },
+        "results_used": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "IDs or references of results that were actually used in decision-making"
+        },
+        "influence": {
+          "type": "string",
+          "description": "How this query's results influenced the phase output"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "scaffold-manifest.json",
+  "title": "Scaffold Manifest",
+  "description": "Manifest produced by the implementation_scaffold phase describing all scaffold documents written during a run, the source spec they were generated from, and whether any source files outside the scaffold directory were modified. One scaffold-manifest artifact is registered per scaffold run; individual documents listed under 'documents[]' are typically also registered as scaffold-document artifacts.",
+  "type": "object",
+  "required": ["manifest_id", "run_id", "phase", "spec_id", "documents"],
+  "properties": {
+    "manifest_id": {
+      "type": "string",
+      "description": "Unique identifier for this scaffold manifest (e.g. 'scaffold-manifest-pipeline-meta-test-2026-04-10')"
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Pipeline run ID this scaffold manifest belongs to"
+    },
+    "phase": {
+      "type": "string",
+      "description": "Phase that produced the manifest. Typically 'implementation_scaffold'."
+    },
+    "spec_id": {
+      "type": "string",
+      "description": "ID of the design spec this scaffold elaborates"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 timestamp when the manifest was generated"
+    },
+    "source_spec": {
+      "type": "string",
+      "description": "Repository-relative path to the source spec JSON file the scaffold was derived from"
+    },
+    "validation_report": {
+      "type": "string",
+      "description": "Optional repository-relative path to a validation report JSON file associated with the source spec"
+    },
+    "note": {
+      "type": "string",
+      "description": "Optional free-form note describing the scope, provenance, or status of this scaffold run"
+    },
+    "documents": {
+      "type": "array",
+      "description": "All scaffold documents produced by this run",
+      "items": { "$ref": "#/$defs/ScaffoldDocumentEntry" }
+    },
+    "changes_applied_to_source": {
+      "type": "boolean",
+      "description": "True if the scaffold run modified any files in the source tree (not just pipeline_mcp_data/scaffold/)"
+    },
+    "files_outside_scaffold_modified": {
+      "type": "boolean",
+      "description": "True if any files outside pipeline_mcp_data/scaffold/ were written during this scaffold run"
+    },
+    "known_quality_gate_misconfigurations": {
+      "type": "array",
+      "description": "Optional list of known quality-gate misconfigurations surfaced by this scaffold run",
+      "items": { "type": "object" }
+    }
+  },
+  "$defs": {
+    "ScaffoldDocumentEntry": {
+      "type": "object",
+      "description": "A single scaffold document entry. Mirrors the shape of scaffold-document artifacts with the additional 'path' and 'description' fields that the manifest records for cross-reference.",
+      "required": ["filename"],
+      "properties": {
+        "filename": {
+          "type": "string",
+          "description": "File name of the scaffold document"
+        },
+        "path": {
+          "type": "string",
+          "description": "Repository-relative path to the document"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of the document's purpose"
+        },
+        "byte_size": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Size of the document in bytes. Nullable because some scaffold writers do not record size at generation time."
+        },
+        "generated_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO-8601 timestamp when the document was generated"
+        },
+        "status": {
+          "type": "string",
+          "description": "Free-form status string"
+        }
+      }
+    }
+  }
+}

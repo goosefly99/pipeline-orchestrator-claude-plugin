@@ -1,0 +1,4 @@
+node_modules/
+hooks/runtime-config.json
+hooks/hook-logs/
+pipeline_mcp_data/

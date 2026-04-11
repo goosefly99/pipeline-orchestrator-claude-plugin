@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "curated-collection.json",
+  "title": "Curated Collection",
+  "description": "Enriched research collection produced by Phase 1 (Curation). Items are deduplicated, filtered, and enriched with Claude-generated summaries, tags, and promoted metadata fields. This is the primary input for concept extraction and design synthesis. Schema is compatible with both cc_load_collection and synth_load_collection auto-detection.",
+  "type": "object",
+  "required": ["collection_id", "created_date", "curated_date", "status", "items"],
+  "properties": {
+    "collection_id": {
+      "type": "string",
+      "description": "Same ID as the raw collection it was curated from"
+    },
+    "manifest_id": {
+      "type": "string",
+      "description": "ID of the research manifest that produced the source raw collection"
+    },
+    "created_date": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the raw collection was originally created"
+    },
+    "curated_date": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When curation was performed"
+    },
+    "status": {
+      "type": "string",
+      "const": "curated"
+    },
+    "curation_stats": {
+      "$ref": "#/$defs/CurationStats"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Collection-level metadata (topic description, source info, limitations)"
+    },
+    "items": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/CuratedItem" }
+    }
+  },
+  "$defs": {
+    "CurationStats": {
+      "type": "object",
+      "required": ["raw_count", "final_count"],
+      "properties": {
+        "raw_count": {
+          "type": "integer",
+          "description": "Number of items in the raw collection before curation"
+        },
+        "duplicates_removed": {
+          "type": "integer",
+          "default": 0
+        },
+        "filtered_out": {
+          "type": "integer",
+          "default": 0,
+          "description": "Items removed by tag filters, content length, or quality assessment"
+        },
+        "final_count": {
+          "type": "integer",
+          "description": "Number of items in the curated collection"
+        }
+      }
+    },
+    "CuratedItem": {
+      "type": "object",
+      "required": ["id", "content", "summary", "tags"],
+      "description": "Field names are chosen for compatibility with cc_load_collection and synth_load_collection auto-detection. Both servers detect: id, content, summary/title, tags, profile/author, date, url.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique item identifier (tweet_id, generated hash, etc.)"
+        },
+        "source_type": {
+          "type": "string",
+          "description": "Origin source type for traceability"
+        },
+        "source_ref": {
+          "type": "string",
+          "description": "Source-specific reference for back-linking"
+        },
+        "title": {
+          "type": "string",
+          "description": "Short descriptive title (Claude-generated if not present in source)"
+        },
+        "content": {
+          "type": "string",
+          "description": "Full text content"
+        },
+        "summary": {
+          "type": "string",
+          "description": "Claude-generated concise summary of the item's key information"
+        },
+        "url": {
+          "type": "string",
+          "description": "Source URL if applicable"
+        },
+        "date": {
+          "type": "string",
+          "description": "Publication or creation date"
+        },
+        "author": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "handle": { "type": "string" },
+            "bio": { "type": "string" }
+          },
+          "description": "Also detected as 'profile' by auto-detection (both field names work)"
+        },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Claude-assigned tags based on content analysis"
+        },
+        "strategy_type": {
+          "type": "string",
+          "description": "Domain-specific: type of strategy (promoted from metadata by curation)"
+        },
+        "platform": {
+          "type": "string",
+          "description": "Domain-specific: target platform (promoted from metadata by curation)"
+        },
+        "instrument": {
+          "type": "string",
+          "description": "Domain-specific: financial instrument type (promoted from metadata by curation)"
+        },
+        "dependencies": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Domain-specific: tools, APIs, or libraries referenced (promoted from metadata by curation)"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "All remaining fields not captured by primary or domain-specific fields"
+        }
+      }
+    }
+  }
+}

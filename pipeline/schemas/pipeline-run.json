@@ -1,0 +1,336 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pipeline-run.json",
+  "title": "Pipeline Run Configuration",
+  "description": "Top-level entry point for any pipeline execution. Specifies input sources, phase control, debate settings, codebase context, knowledge base connections, and output configuration. Saved alongside artifacts for reproducibility.",
+  "type": "object",
+  "required": ["run"],
+  "properties": {
+    "run": {
+      "type": "object",
+      "required": ["id", "pipeline_version"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for this pipeline run",
+          "pattern": "^[a-z0-9][a-z0-9\\-]*$"
+        },
+        "pipeline_version": {
+          "type": "string",
+          "description": "Version of pipeline.toml this run targets",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        },
+        "created": {
+          "type": "string",
+          "format": "date",
+          "description": "Date this run config was created"
+        },
+        "inputs": {
+          "$ref": "#/$defs/RunInputs"
+        },
+        "discovery": {
+          "$ref": "#/$defs/DiscoverySettings"
+        },
+        "phases": {
+          "$ref": "#/$defs/PhaseControl"
+        },
+        "debate": {
+          "$ref": "#/$defs/DebateSettings"
+        },
+        "codebase": {
+          "$ref": "#/$defs/CodebaseSettings"
+        },
+        "knowledge_bases": {
+          "$ref": "#/$defs/KnowledgeBaseSettings"
+        },
+        "output": {
+          "$ref": "#/$defs/OutputSettings"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "RunInputs": {
+      "type": "object",
+      "description": "Input sources for the pipeline run",
+      "properties": {
+        "documents": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Local file paths or globs to ingest. Supports PDF, markdown, text, CSV, HTML, JSON, YAML, code files, and Jupyter notebooks."
+        },
+        "documents_recursive": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether to recursively scan directories in document paths"
+        },
+        "existing_collections": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Paths to existing curated-collection JSON files to include (e.g., resume from prior run)"
+        },
+        "manifest": {
+          "type": "string",
+          "default": "",
+          "description": "Path to an existing research-manifest file. If empty and discovery is enabled, a manifest is auto-generated from documents."
+        }
+      }
+    },
+    "DiscoverySettings": {
+      "type": "object",
+      "description": "Controls research discovery behavior",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to run the research discovery phase"
+        },
+        "augment_from_documents": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true and documents are provided: analyze ingested docs, auto-generate a research manifest with queries derived from document content, then run discovery to find additional related sources"
+        },
+        "merge_strategy": {
+          "type": "string",
+          "enum": ["append", "separate"],
+          "default": "append",
+          "description": "How to combine ingested documents with discovery results. 'append' merges into a single raw collection; 'separate' keeps as distinct collections."
+        },
+        "auto_manifest": {
+          "type": "object",
+          "description": "Settings for auto-generated manifests (used when augment_from_documents is true)",
+          "properties": {
+            "search_x": { "type": "boolean", "default": true },
+            "search_web": { "type": "boolean", "default": true },
+            "search_arxiv": { "type": "boolean", "default": false },
+            "max_queries": {
+              "type": "integer",
+              "default": 10,
+              "minimum": 1,
+              "description": "Maximum number of auto-generated search queries"
+            },
+            "max_results_per_query": {
+              "type": "integer",
+              "default": 25,
+              "minimum": 1
+            }
+          }
+        }
+      }
+    },
+    "PhaseControl": {
+      "type": "object",
+      "description": "Explicit phase control for this run",
+      "properties": {
+        "skip": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "document_ingestion", "research_discovery", "curation",
+              "concept_extraction", "codebase_analysis", "design_synthesis",
+              "debate", "validation", "implementation_scaffold"
+            ]
+          },
+          "default": [],
+          "description": "Phases to skip. All other phases run if their DAG inputs are satisfied."
+        }
+      }
+    },
+    "DebateSettings": {
+      "type": "object",
+      "description": "Controls adversarial debate behavior",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["knowledge-overview", "design-spec"]
+          },
+          "default": ["knowledge-overview", "design-spec"],
+          "description": "Which artifact types to run debate on"
+        },
+        "max_rounds": {
+          "type": "integer",
+          "default": 1,
+          "minimum": 1,
+          "description": "Number of divergent-convergent cycles per debate"
+        },
+        "extra_specialists": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Additional specialist agents beyond the default roster (e.g., 'regulatory_specialist', 'performance_specialist')"
+        }
+      }
+    },
+    "CodebaseSettings": {
+      "type": "object",
+      "description": "Controls codebase analysis for integration into existing packages",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "path": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the target package codebase"
+        }
+      }
+    },
+    "KnowledgeBaseSettings": {
+      "type": "object",
+      "description": "Connections to internal knowledge stores (vectorstore and/or SQL) for system-specific context during synthesis, debate, validation, and scaffold",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "sources": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/KBSource" }
+        },
+        "policy": {
+          "$ref": "#/$defs/KBPolicy"
+        }
+      }
+    },
+    "KBSource": {
+      "type": "object",
+      "required": ["name", "type", "description"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique identifier for this knowledge base source"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["vectorstore", "sql"],
+          "description": "Type of knowledge base"
+        },
+        "description": {
+          "type": "string",
+          "description": "What this knowledge base contains and when agents should query it"
+        },
+        "vectorstore_provider": {
+          "type": "string",
+          "enum": ["pinecone", "chroma", "pgvector", "qdrant", "weaviate", "local-hnsw"],
+          "description": "Vector store provider (required when type is 'vectorstore')"
+        },
+        "vectorstore_index": {
+          "type": "string",
+          "description": "Index or collection name in the vector store"
+        },
+        "embedding_model": {
+          "type": "string",
+          "description": "Embedding model used for queries"
+        },
+        "embedding_config": {
+          "type": "object",
+          "description": "Embedding model configuration for vector store queries",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "enum": ["openai", "ollama"],
+              "default": "openai",
+              "description": "Embedding provider. 'openai' requires an API key; 'ollama' uses a local Ollama server."
+            },
+            "model": {
+              "type": "string",
+              "description": "Embedding model name. Defaults: openai → 'text-embedding-3-small', ollama → 'qwen3-embedding:0.6b'."
+            },
+            "api_key_env": {
+              "type": "string",
+              "default": "OPENAI_API_KEY",
+              "description": "Environment variable containing the API key (openai provider only)."
+            },
+            "ollama_base_url": {
+              "type": "string",
+              "default": "http://localhost:11434",
+              "description": "Base URL for the Ollama server (ollama provider only). Overrides OLLAMA_BASE_URL env var."
+            }
+          }
+        },
+        "top_k": {
+          "type": "integer",
+          "default": 10,
+          "description": "Number of results to return per vector search"
+        },
+        "sql_dialect": {
+          "type": "string",
+          "enum": ["postgresql", "sqlite", "mysql"],
+          "description": "SQL dialect (required when type is 'sql')"
+        },
+        "sql_connection_env": {
+          "type": "string",
+          "description": "Environment variable containing the SQL connection string"
+        },
+        "env_credentials": {
+          "type": "string",
+          "default": "",
+          "description": "Environment variable name for API credentials (empty if no auth needed)"
+        },
+        "query_templates": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/KBQueryTemplate" },
+          "description": "Predefined query templates for SQL sources"
+        }
+      }
+    },
+    "KBQueryTemplate": {
+      "type": "object",
+      "required": ["name", "description", "query", "parameters"],
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "query": { "type": "string", "description": "SQL query with $1, $2, etc. positional parameters" },
+        "parameters": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Parameter names corresponding to positional placeholders"
+        }
+      }
+    },
+    "KBPolicy": {
+      "type": "object",
+      "properties": {
+        "available_in": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["design_synthesis", "debate", "validation", "implementation_scaffold"]
+        },
+        "max_queries_per_phase": {
+          "type": "integer",
+          "default": 20,
+          "minimum": 1
+        },
+        "query_mode": {
+          "type": "string",
+          "enum": ["proactive", "on_demand"],
+          "default": "proactive",
+          "description": "'proactive': agents check KBs before making decisions. 'on_demand': agents only query when they identify a specific unanswered question."
+        }
+      }
+    },
+    "OutputSettings": {
+      "type": "object",
+      "properties": {
+        "base_dir": {
+          "type": "string",
+          "default": "strategies",
+          "description": "Base directory for all pipeline artifacts"
+        },
+        "project_name": {
+          "type": "string",
+          "default": "",
+          "description": "Optional subdirectory for this run's artifacts"
+        }
+      }
+    }
+  }
+}

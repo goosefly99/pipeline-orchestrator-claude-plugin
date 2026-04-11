@@ -1,0 +1,8 @@
+{
+  "event": "PreToolUse",
+  "tool_name": "mcp__pipeline__pipeline_start_phase",
+  "tool_input": {
+    "phase": "curation"
+  },
+  "session_id": "test-session-002"
+}
