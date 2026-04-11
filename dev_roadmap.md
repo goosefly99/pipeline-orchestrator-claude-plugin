@@ -20,9 +20,9 @@
 |-----------|-------|-------|:-----------:|:-----------:|:--------:|:-------:|
 | M0 — Part 1 & Part 2 & Feature A | Quality-gates fix + 7 post-meta-run fixes + pre-init hook | 10 | 0 | 0 | 10 | 0 |
 | M1 — Feature C | Per-run hierarchical artifact directories | 10 | 0 | 0 | 10 | 0 |
-| M2 — Feature B | Pre-phase-start hook with Agent-per-phase execution | 10 | 10 | 0 | 0 | 0 |
+| M2 — Feature B | Pre-phase-start hook with Agent-per-phase execution | 10 | 9 | 0 | 1 | 0 |
 | M3 — Part 6 | Hooks code-review fixes (harness runtime) | 12 | 12 | 0 | 0 | 0 |
-| **Total** | | **42** | **22** | **0** | **20** | **0** |
+| **Total** | | **42** | **21** | **0** | **21** | **0** |
 
 **Current work focus:** M1 → M2 → M3 (M3 can execute in parallel with M1/M2 since it
 targets `hooks/scripts/` rather than the TypeScript MCP server).
@@ -129,7 +129,7 @@ written by the subagent.
 
 | ID | Description | Target Files | Depends On | Status |
 |----|-------------|--------------|:----------:|:------:|
-| B1 | Add `AgentDirective` interface (`subagent_type`, `model`, `description`, `prompt`, `isolation?`). Add optional `model?: string` to the `Phase` type. | `types.ts` | — | Not Started |
+| B1 | Add `AgentDirective` interface (`subagent_type`, `model`, `description`, `prompt`, `isolation?`). Add optional `model?: string` to the `Phase` type. | `types.ts` | — | Complete |
 | B2 | Extend `HookResult` with optional `agent_directive?: AgentDirective`. Parse `agent_directive` from hook stdout JSON inside the existing hook runner. | `hooks.ts` | B1 | Not Started |
 | B3 | Extend `loadPhaseConfig` / phases parser in `toml-loader.ts` to read optional `model` field per phase. Maintain backwards compatibility (undefined = fall through precedence). | `toml-loader.ts` | B1 | Not Started |
 | B4 | Add per-phase model overrides to `pipeline/pipeline.toml` — e.g. `debate = "claude-opus-4-6"`, planning-heavy phases use Opus, bounded execution phases use Sonnet. Document convention in a comment block above `[[phases]]`. | `pipeline/pipeline.toml` | B3 | Not Started |

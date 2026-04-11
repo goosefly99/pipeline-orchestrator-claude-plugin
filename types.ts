@@ -27,6 +27,13 @@ export interface PhaseDefinition {
   reusable?: boolean
   /** Recommended model tier for this phase. */
   model_tier?: 'haiku' | 'sonnet' | 'opus'
+  /**
+   * Concrete Claude model ID override for this phase (e.g. `'claude-opus-4-6'`).
+   * Feature B `pre_start` hooks use this at the top of the model precedence
+   * chain: phase-specific `model` > `run_parameters.phase_model` > built-in
+   * default. Set in `pipeline/pipeline.toml` under a `[[phases]]` entry.
+   */
+  model?: string
 }
 
 export interface EdgeDefinition {
@@ -196,6 +203,34 @@ export interface PipelineRunParameters {
   run_directory_timestamp?: string
   /** Extensible for future parameters. */
   [key: string]: unknown
+}
+
+/**
+ * Directive returned by a `pre_start` hook telling the MCP client (Claude
+ * Code) how to spawn the subagent that will execute the phase. When present
+ * in the `pipeline_start_phase` response, the client MUST spawn an Agent
+ * subagent with these exact parameters; that subagent then owns
+ * `pipeline_complete_phase` / `pipeline_fail_phase` for the phase. The
+ * orchestrator does not wait synchronously — subsequent `pipeline_next_phases`
+ * calls in the parent session observe the state written by the subagent.
+ *
+ * See Feature B in `pipeline_mcp_data/scaffold/IMPLEMENTATION-PLAN.md`.
+ */
+export interface AgentDirective {
+  /** Claude Code subagent type, e.g. `'general-purpose'`. */
+  subagent_type: string
+  /**
+   * Resolved Claude model ID. Resolution precedence:
+   * phase-specific `PhaseDefinition.model` > `run_parameters.phase_model` >
+   * hard-coded default (`'claude-sonnet-4-6'`).
+   */
+  model: string
+  /** Short, human-readable description of the task — surfaced in the Agent tool call. */
+  description: string
+  /** Full subagent prompt — typically the phase brief + completion instructions + a no-context-inheritance rule. */
+  prompt: string
+  /** Optional git-worktree isolation request for agents that mutate the repo. */
+  isolation?: 'worktree'
 }
 
 /** Lifecycle event record for events.jsonl audit trail. */
