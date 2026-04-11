@@ -2,7 +2,8 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { loadSchemas, validateArtifact } from '../validator.ts'
 import { loadQualityGates } from '../toml-loader.ts'
-import { resolve, dirname } from 'node:path'
+import { getArtifactDir, getRunDataDir } from '../storage.ts'
+import { resolve, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -57,7 +58,13 @@ describe('validation-report.json schema', () => {
       results: [],
       overall_status: 'PASS',
       spec_errors_found: [],
-      validated_spec_path: 'pipeline_mcp_data/specs/test-spec.json',
+      validated_spec_path: join(
+        getArtifactDir(
+          getRunDataDir('pipeline_mcp_data', 'example-run', '2026-04-10T12:00:00Z'),
+          'specs',
+        ),
+        'test-spec.json',
+      ),
     }
     const result = validateArtifact(schemas, 'validation-report.json', artifact)
     assert.equal(result.valid, true, `Unexpected errors: ${result.errors.join(', ')}`)

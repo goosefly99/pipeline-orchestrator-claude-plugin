@@ -105,6 +105,63 @@ When extracting additional handlers, follow this same pattern. Keep handler modu
 
 **See also:** `tests/quality-gates-config.test.ts`, `pipeline/schemas/`, `quality-gates.ts` line 211.
 
+## Per-Run Artifact Directories
+
+**Layout:** New runs persist all artifacts under a per-run tree rooted at
+`pipeline_mcp_data/runs/{sanitized_run_name}-{sanitized_timestamp}/`. Subtypes
+(`collections/curated`, `collections/raw`, `debates`, `overviews`, `specs`,
+`scaffold`) live as subdirectories of this root. The run's `run-state.json` and
+`events.jsonl` sit at the root of the per-run directory (no extra subfolder).
+
+**How a run resolves its directory:** `initRun` in `run-state.ts` reads
+`run_parameters.run_name` and `run_parameters.run_directory_timestamp`
+(populated by the pre-pipeline-init hook — see Feature A) and sets
+`state.run_data_dir` via `getRunDataDir(baseDir, runName, timestamp)`.
+Sanitization rules (in `storage.ts`):
+
+- `sanitizeRunName`: `/[^a-zA-Z0-9-]/g → '-'`, lowercase, collapse hyphen
+  runs, trim leading/trailing hyphens, truncate to 64 chars. Empty input
+  becomes `unnamed-run`. Windows-unsafe characters (`< > : " / \ | ? *`) and
+  Unicode codepoints are all normalized to `-`.
+- `sanitizeRunTimestamp`: ISO timestamp with `:` and `.` replaced by `-`
+  (Windows-safe).
+
+**Backwards compatibility (Option B):** Legacy runs (no `run_parameters`, no
+`state.run_data_dir`) keep writing to the legacy top-level folders —
+`pipeline_mcp_data/debates/`, `pipeline_mcp_data/specs/`, etc. — and
+`pipeline_list_artifacts` falls back to those top-level paths when
+`state.run_data_dir` is absent. New runs always use the per-run layout; the
+two layouts coexist on disk without migration.
+
+**Rules for agents and contributors:**
+
+1. Never hard-code `pipeline_mcp_data/<subtype>/` path literals in new code or
+   tests. Use `getRunDataDir` + `getArtifactDir` to derive paths from the run's
+   `run_data_dir`, or the write helper `persistArtifact(runDataDir, subtype,
+   fileName, artifact, force?)`.
+2. When writing a handler that persists an artifact, branch on the presence of
+   `state.run_data_dir`: if set, call `ctx.persistArtifact(...)`; otherwise
+   fall through to the legacy `ctx.storeArtifact` path. `handleStoreArtifact`
+   in `artifact-handlers.ts` is the canonical example of the dual-path
+   routing.
+3. The `ArtifactSubtype` union in `storage.ts` is the source of truth for
+   run-scoped subtypes. Use `storageKeyToSubtype(storageKey)` to translate
+   tool-facing storage keys (`'debates'`, `'raw-collections'`, etc.) into the
+   internal subtype union before calling the run-scoped helpers.
+4. `run-state.json` and `events.jsonl` follow the same dual routing —
+   `resolveRunWriteDir(state, fallbackDir)` returns `state.run_data_dir` when
+   set, otherwise the legacy `stateDir`. `persist()` uses this helper so the
+   state file lands beside its artifacts for new runs.
+5. Tests that need a `run_data_dir` should construct it via `getRunDataDir`
+   (as in `tests/per-run-paths.test.ts`), not by joining a literal
+   `pipeline_mcp_data/runs/...` string.
+
+**See also:** `storage.ts` (path helpers, `persistArtifact`,
+`storageKeyToSubtype`), `run-state.ts` (`initRun`, `resolveRunWriteDir`),
+`artifact-handlers.ts` (run-scoped routing for store/load/list),
+`tests/per-run-paths.test.ts` (integration coverage across sanitization,
+two-run collision, and legacy fallback).
+
 ## MCP Tool Classification
 
 Tools are classified into three categories with different response conventions:
