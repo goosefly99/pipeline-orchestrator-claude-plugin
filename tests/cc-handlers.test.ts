@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { handleCCGetItems } from '../cc-handlers.ts'
+import { handleCCGetItems, handleCCSaveOverview } from '../cc-handlers.ts'
 import type { CCContext } from '../cc-handlers.ts'
-import type { ResearchItem } from '../cc-types.ts'
+import type { ResearchItem, KnowledgeOverview } from '../cc-types.ts'
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -25,6 +25,23 @@ function makeCtx(items: ResearchItem[]): CCContext {
     saveOverview: () => '',
     listOverviews: () => [],
     getOverview: () => null,
+  }
+}
+
+function makeOverview(overrides?: Partial<KnowledgeOverview>): KnowledgeOverview {
+  return {
+    overview_id: 'test-id',
+    title: 'Test Overview',
+    created_date: new Date().toISOString(),
+    status: 'draft',
+    sources: [],
+    summary: '',
+    concepts: [],
+    themes: [],
+    key_findings: [],
+    knowledge_gaps: [],
+    open_questions: [],
+    ...overrides,
   }
 }
 
@@ -115,6 +132,80 @@ describe('handleCCGetItems — content truncation', () => {
     assert.throws(
       () => handleCCGetItems({ collection: 'test' }, ctx),
       /collection and item_ids are required/,
+    )
+  })
+})
+
+// ── handleCCSaveOverview — persistOverview routing (Feature C) ─
+
+describe('handleCCSaveOverview', () => {
+  it('prefers ctx.persistOverview when present and passes the output_dir override through', () => {
+    const calls: { overview: KnowledgeOverview; outputDir?: string }[] = []
+    const saveCalls: { overview: KnowledgeOverview; outputDir?: string }[] = []
+
+    const ctx: CCContext = {
+      ...makeCtx([]),
+      saveOverview: (overview, outputDir) => {
+        saveCalls.push({ overview, outputDir })
+        return '/should/not/be/used.json'
+      },
+      persistOverview: (overview, outputDirOverride) => {
+        calls.push({ overview, outputDir: outputDirOverride })
+        return '/tmp/runs/abc/overviews/persisted--ov1.json'
+      },
+    }
+
+    const overview = makeOverview({ overview_id: 'ov1', title: 'Persisted' })
+    const result = handleCCSaveOverview(
+      { overview, output_dir: '/custom/override' },
+      ctx,
+    )
+
+    // Exactly one persistOverview call, zero saveOverview calls.
+    assert.equal(calls.length, 1, 'persistOverview should be called exactly once')
+    assert.equal(saveCalls.length, 0, 'saveOverview should not be called when persistOverview is present')
+    assert.equal(calls[0].overview.overview_id, 'ov1')
+    assert.equal(calls[0].outputDir, '/custom/override')
+
+    // Handler mutated status to 'complete' before delegation.
+    assert.equal(overview.status, 'complete')
+
+    // Response lines: path, ID, title, concepts, themes.
+    assert.ok(result.json.includes('/tmp/runs/abc/overviews/persisted--ov1.json'))
+    assert.ok(result.json.includes('ID: ov1'))
+    assert.ok(result.json.includes('Title: Persisted'))
+    assert.ok(result.json.includes('Concepts: 0'))
+    assert.ok(result.json.includes('Themes: 0'))
+  })
+
+  it('falls back to ctx.saveOverview when ctx.persistOverview is absent', () => {
+    const saveCalls: { overview: KnowledgeOverview; outputDir?: string }[] = []
+
+    const ctx: CCContext = {
+      ...makeCtx([]),
+      saveOverview: (overview, outputDir) => {
+        saveCalls.push({ overview, outputDir })
+        return '/legacy/overviews/fallback--ov2.json'
+      },
+      // persistOverview intentionally omitted.
+    }
+
+    const overview = makeOverview({ overview_id: 'ov2', title: 'Fallback' })
+    const result = handleCCSaveOverview({ overview }, ctx)
+
+    assert.equal(saveCalls.length, 1)
+    assert.equal(saveCalls[0].overview.overview_id, 'ov2')
+    assert.equal(saveCalls[0].outputDir, undefined)
+    assert.ok(result.json.includes('/legacy/overviews/fallback--ov2.json'))
+    assert.ok(result.json.includes('ID: ov2'))
+    assert.ok(result.json.includes('Title: Fallback'))
+  })
+
+  it('throws when overview is missing', () => {
+    const ctx = makeCtx([])
+    assert.throws(
+      () => handleCCSaveOverview({}, ctx),
+      /overview is required/,
     )
   })
 })

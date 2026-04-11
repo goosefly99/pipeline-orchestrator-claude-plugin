@@ -10,6 +10,7 @@ import {
 import {
   collectConcepts,
   saveOverview,
+  persistOverview,
   listOverviews,
   getOverview,
 } from './concepts.ts'
@@ -55,6 +56,18 @@ export interface CCContext {
   ): { synthesis_prompt: string; chunk?: { chunk_index: number; total_chunks: number; item_count: number; total_items: number; continuation_token?: string; is_final_chunk: boolean } }
 
   saveOverview(overview: KnowledgeOverview, outputDir?: string): string
+
+  /**
+   * Per-run overview persistence (Feature C). When present, takes precedence
+   * over `saveOverview` in `handleCCSaveOverview`. Server.ts wires this to
+   * `persistOverview(runDataDir, legacyBaseDir, overview, outputDirOverride)`
+   * so callers get automatic run-scoped routing without plumbing context
+   * through the handler.
+   *
+   * Optional so older test fixtures that mock the context without this
+   * field continue to fall back to `saveOverview`.
+   */
+  persistOverview?(overview: KnowledgeOverview, outputDirOverride?: string): string
 
   listOverviews(directory?: string): {
     overview_id: string
@@ -279,7 +292,12 @@ export function handleCCSaveOverview(args: Record<string, unknown>, ctx: CCConte
   if (!overview) throw new Error('overview is required')
 
   overview.status = 'complete'
-  const filePath = ctx.saveOverview(overview, args.output_dir as string | undefined)
+  const outputDirOverride = args.output_dir as string | undefined
+  // Feature C: prefer persistOverview (run-scoped) when the context supplies it;
+  // fall back to the legacy saveOverview so older test fixtures keep working.
+  const filePath = ctx.persistOverview
+    ? ctx.persistOverview(overview, outputDirOverride)
+    : ctx.saveOverview(overview, outputDirOverride)
 
   return {
     json: [

@@ -9,6 +9,7 @@ import type {
   Concept,
   Theme,
 } from './cc-types.ts'
+import { getArtifactDir } from './storage.ts'
 
 // ── Configurable output directory ───────────────────────────────
 
@@ -312,6 +313,23 @@ function buildCrossReferences(sourceGroups: SourceGroup[]): string {
 
 // ── Persistence ─────────────────────────────────────────────────
 
+/**
+ * Compute the on-disk filename (not a full path) for a given overview.
+ *
+ * Derives a slug from `overview.title` — lowercased, non-alphanumerics
+ * collapsed to `-`, leading/trailing `-` trimmed, truncated to 60 chars —
+ * and appends `--{overview_id}.json`. Pure helper: no I/O, no module state.
+ */
+export function overviewFileName(overview: KnowledgeOverview): string {
+  const slug = overview.title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 60)
+
+  return `${slug}--${overview.overview_id}.json`
+}
+
 export function saveOverview(
   overview: KnowledgeOverview,
   outputDir?: string,
@@ -319,15 +337,64 @@ export function saveOverview(
   const dir = outputDir ? resolve(outputDir) : OUTPUT_DIR
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
 
-  const slug = overview.title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 60)
+  const filePath = join(dir, overviewFileName(overview))
 
-  const filename = `${slug}--${overview.overview_id}.json`
-  const filePath = join(dir, filename)
+  writeFileSync(filePath, JSON.stringify(overview, null, 2), 'utf-8')
+  return filePath
+}
 
+// ── Per-run overview write helpers (Feature C) ──────────────────
+//
+// Route overview persistence through `state.run_data_dir` when set,
+// falling back to `{legacyBaseDir}/overviews/` when a run predates
+// Feature-A parameterization. Preserves the historical
+// "disk-first, overwrite-ok" semantics of saveOverview — collision
+// is avoided in practice by the random-hex suffix on overview IDs.
+
+/**
+ * Resolve the on-disk directory for overviews.
+ *
+ * - When `runDataDir` is a non-empty string, returns
+ *   `getArtifactDir(runDataDir, 'overviews')`.
+ * - Otherwise falls back to `{legacyBaseDir}/overviews`.
+ */
+export function resolveOverviewsDir(
+  runDataDir: string | undefined,
+  legacyBaseDir: string,
+): string {
+  if (runDataDir) {
+    return getArtifactDir(runDataDir, 'overviews')
+  }
+  return join(legacyBaseDir, 'overviews')
+}
+
+/**
+ * Persist an overview under the run's data directory.
+ *
+ * Precedence for the target directory:
+ *   1. `outputDirOverride` (resolved absolute) — preserves the explicit
+ *      `output_dir` user-override semantics of `handleCCSaveOverview`.
+ *   2. `getArtifactDir(runDataDir, 'overviews')` when `runDataDir` is set.
+ *   3. `{legacyBaseDir}/overviews` as the legacy fallback.
+ *
+ * When both `runDataDir` and `outputDirOverride` are absent, writes under
+ * `legacyBaseDir` (not the module-level `OUTPUT_DIR`) so callers like
+ * `server.ts` retain full control over the fallback location.
+ *
+ * @returns the absolute path written.
+ */
+export function persistOverview(
+  runDataDir: string | undefined,
+  legacyBaseDir: string,
+  overview: KnowledgeOverview,
+  outputDirOverride?: string,
+): string {
+  const dir = outputDirOverride
+    ? resolve(outputDirOverride)
+    : resolveOverviewsDir(runDataDir, legacyBaseDir)
+
+  mkdirSync(dir, { recursive: true })
+  const filePath = join(dir, overviewFileName(overview))
   writeFileSync(filePath, JSON.stringify(overview, null, 2), 'utf-8')
   return filePath
 }

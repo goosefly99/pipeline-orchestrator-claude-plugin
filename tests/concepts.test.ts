@@ -1,13 +1,16 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import { join, resolve, relative, isAbsolute } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
   collectConcepts,
   saveOverview,
   listOverviews,
   getOverview,
+  overviewFileName,
+  resolveOverviewsDir,
+  persistOverview,
 } from '../concepts.ts'
 import type { ResearchItem, KnowledgeOverview } from '../cc-types.ts'
 
@@ -449,5 +452,192 @@ describe('getOverview', () => {
     assert.equal(loaded!.key_findings.length, 1)
     assert.equal(loaded!.knowledge_gaps.length, 1)
     assert.equal(loaded!.open_questions.length, 1)
+  })
+})
+
+// ── Per-run overview write helpers (Feature C) ────────────────
+
+describe('overviewFileName', () => {
+  it('derives a slug-based filename with the overview id appended', () => {
+    const overview = makeOverview({ overview_id: 'abc1234', title: 'My Overview' })
+    assert.equal(overviewFileName(overview), 'my-overview--abc1234.json')
+  })
+
+  it('strips special characters and collapses runs of non-alphanumerics', () => {
+    const overview = makeOverview({ overview_id: 'xyz', title: 'Hello! @World # 2026' })
+    assert.equal(overviewFileName(overview), 'hello-world-2026--xyz.json')
+  })
+
+  it('trims leading and trailing hyphens from the slug', () => {
+    const overview = makeOverview({ overview_id: 'id', title: '!!!trim me!!!' })
+    assert.equal(overviewFileName(overview), 'trim-me--id.json')
+  })
+
+  it('truncates slug to at most 60 characters', () => {
+    const overview = makeOverview({ overview_id: 'id', title: 'a'.repeat(100) })
+    const name = overviewFileName(overview)
+    // slug is 60 'a's, then '--id.json'
+    assert.equal(name, `${'a'.repeat(60)}--id.json`)
+  })
+})
+
+describe('resolveOverviewsDir', () => {
+  it('routes to run_data_dir/overviews when runDataDir is set', () => {
+    const runDataDir = join(tempDir, 'runs', 'my-run-2026-04-10')
+    const dir = resolveOverviewsDir(runDataDir, join(tempDir, 'legacy'))
+    assert.equal(dir, join(runDataDir, 'overviews'))
+  })
+
+  it('falls back to legacyBaseDir/overviews when runDataDir is undefined', () => {
+    const legacyBaseDir = join(tempDir, 'legacy')
+    const dir = resolveOverviewsDir(undefined, legacyBaseDir)
+    assert.equal(dir, join(legacyBaseDir, 'overviews'))
+  })
+
+  it('treats empty-string runDataDir as absent (falsy) and falls back', () => {
+    const legacyBaseDir = join(tempDir, 'legacy')
+    const dir = resolveOverviewsDir('', legacyBaseDir)
+    assert.equal(dir, join(legacyBaseDir, 'overviews'))
+  })
+})
+
+describe('persistOverview', () => {
+  it('writes under runDataDir/overviews/{slug--id}.json when runDataDir is set', () => {
+    const runDataDir = join(tempDir, 'runs', 'persist-a')
+    const overview = makeOverview({ overview_id: 'ov-persist-1', title: 'Persist Test' })
+
+    const writtenPath = persistOverview(
+      runDataDir,
+      join(tempDir, 'legacy'),
+      overview,
+    )
+
+    const expected = join(runDataDir, 'overviews', 'persist-test--ov-persist-1.json')
+    assert.equal(writtenPath, expected)
+    assert.ok(existsSync(expected), `expected file at ${expected}`)
+    const parsed = JSON.parse(readFileSync(expected, 'utf-8')) as KnowledgeOverview
+    assert.equal(parsed.overview_id, 'ov-persist-1')
+    assert.equal(parsed.title, 'Persist Test')
+  })
+
+  it('falls back to legacyBaseDir/overviews/{slug--id}.json when runDataDir is absent', () => {
+    const legacyBaseDir = join(tempDir, 'legacy-base')
+    const overview = makeOverview({ overview_id: 'ov-legacy-1', title: 'Legacy Test' })
+
+    const writtenPath = persistOverview(undefined, legacyBaseDir, overview)
+
+    const expected = join(legacyBaseDir, 'overviews', 'legacy-test--ov-legacy-1.json')
+    assert.equal(writtenPath, expected)
+    assert.ok(existsSync(expected), `expected file at ${expected}`)
+  })
+
+  it('falls back to legacyBaseDir when runDataDir is an empty string', () => {
+    const legacyBaseDir = join(tempDir, 'legacy-empty')
+    const overview = makeOverview({ overview_id: 'ov-empty', title: 'Empty Rd' })
+
+    const writtenPath = persistOverview('', legacyBaseDir, overview)
+
+    const expected = join(legacyBaseDir, 'overviews', 'empty-rd--ov-empty.json')
+    assert.equal(writtenPath, expected)
+    assert.ok(existsSync(expected))
+  })
+
+  it('honors outputDirOverride above both runDataDir and legacyBaseDir', () => {
+    const runDataDir = join(tempDir, 'runs', 'should-be-ignored')
+    const legacyBaseDir = join(tempDir, 'legacy-ignored')
+    const overrideDir = join(tempDir, 'explicit-override')
+    const overview = makeOverview({ overview_id: 'ov-override', title: 'Override Test' })
+
+    const writtenPath = persistOverview(runDataDir, legacyBaseDir, overview, overrideDir)
+
+    const expected = join(resolve(overrideDir), 'override-test--ov-override.json')
+    assert.equal(writtenPath, expected)
+    assert.ok(existsSync(expected))
+    assert.ok(!existsSync(join(runDataDir, 'overviews')), 'runDataDir path should not be created')
+    assert.ok(!existsSync(join(legacyBaseDir, 'overviews')), 'legacyBaseDir path should not be created')
+  })
+
+  it('honors outputDirOverride even when runDataDir is absent', () => {
+    const overrideDir = join(tempDir, 'override-no-run')
+    const overview = makeOverview({ overview_id: 'ov-onr', title: 'No Run Override' })
+
+    const writtenPath = persistOverview(undefined, join(tempDir, 'legacy'), overview, overrideDir)
+
+    const expected = join(resolve(overrideDir), 'no-run-override--ov-onr.json')
+    assert.equal(writtenPath, expected)
+    assert.ok(existsSync(expected))
+  })
+
+  it('resolves a relative outputDirOverride to an absolute path', () => {
+    // Compute an actually-relative path from cwd to a subdir of tempDir so
+    // the test exercises the resolve() call path, not the absolute-passthrough
+    // (relative() returns a path like ../../tmp/... on POSIX or ..\..\tmp\...
+    // on Windows; either way it's not absolute).
+    const absoluteOverride = join(tempDir, 'rel-override')
+    const relativeOverride = relative(process.cwd(), absoluteOverride)
+    assert.ok(!isAbsolute(relativeOverride), 'test setup: override must be relative')
+
+    const overview = makeOverview({ overview_id: 'ov-rel', title: 'Relative' })
+    const writtenPath = persistOverview(undefined, tempDir, overview, relativeOverride)
+
+    const expected = resolve(relativeOverride, 'relative--ov-rel.json')
+    assert.equal(writtenPath, expected)
+    assert.ok(isAbsolute(writtenPath), 'result should be an absolute path')
+    assert.ok(existsSync(writtenPath))
+  })
+
+  it('creates the target directory tree if it does not exist', () => {
+    const runDataDir = join(tempDir, 'runs', 'deep', 'nested', 'target')
+    const overview = makeOverview({ overview_id: 'ov-deep', title: 'Deep Nested' })
+
+    persistOverview(runDataDir, tempDir, overview)
+
+    const dir = join(runDataDir, 'overviews')
+    assert.ok(existsSync(dir), `expected mkdir to create ${dir}`)
+  })
+
+  it('returns an absolute path', () => {
+    const runDataDir = join(tempDir, 'runs', 'abs')
+    const overview = makeOverview({ overview_id: 'ov-abs', title: 'Abs Path' })
+
+    const writtenPath = persistOverview(runDataDir, tempDir, overview)
+
+    assert.equal(resolve(writtenPath), writtenPath)
+  })
+
+  it('overwrites an existing overview file without raising', () => {
+    const runDataDir = join(tempDir, 'runs', 'overwrite-ov')
+    const first = makeOverview({
+      overview_id: 'ov-same',
+      title: 'Same Title',
+      summary: 'first version',
+    })
+    const second = makeOverview({
+      overview_id: 'ov-same',
+      title: 'Same Title',
+      summary: 'second version',
+    })
+
+    const path1 = persistOverview(runDataDir, tempDir, first)
+    const path2 = persistOverview(runDataDir, tempDir, second)
+
+    assert.equal(path1, path2)
+    const parsed = JSON.parse(readFileSync(path2, 'utf-8')) as KnowledgeOverview
+    assert.equal(parsed.summary, 'second version', 'second write should overwrite the first')
+  })
+
+  it('uses the same filename as saveOverview (shared overviewFileName helper)', () => {
+    const overview = makeOverview({ overview_id: 'ov-match', title: 'Match Test' })
+
+    const savedPath = saveOverview(overview, tempDir)
+    const persistedPath = persistOverview(undefined, tempDir, overview)
+
+    // saveOverview writes directly into its outputDir arg; persistOverview treats
+    // legacyBaseDir as a parent and appends 'overviews/'. The intent of this check
+    // is to confirm both routes derive the same on-disk filename from the shared
+    // overviewFileName helper — the containing directories intentionally differ.
+    const expectedName = overviewFileName(overview)
+    assert.equal(savedPath, join(tempDir, expectedName))
+    assert.equal(persistedPath, join(tempDir, 'overviews', expectedName))
   })
 })

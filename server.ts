@@ -43,6 +43,8 @@ import {
   handleCCGetOverview as ccGetOverviewHandler,
   createCCContext,
 } from './cc-handlers.ts'
+import { persistOverview as persistOverviewToDisk } from './concepts.ts'
+import type { KnowledgeOverview } from './cc-types.ts'
 import {
   handleSynthLoadCollection as synthLoadCollectionHandler,
   handleSynthQuery as synthQueryHandler,
@@ -197,6 +199,19 @@ const ccCtx = {
     } catch {
       return null
     }
+  },
+  // Feature C: route overview writes through run_data_dir when set, with a
+  // legacy {base_dir}/overviews fallback for runs that predate Feature-A.
+  persistOverview: (overview: KnowledgeOverview, outputDirOverride?: string): string => {
+    const legacyBaseDir = activeRun
+      ? baseDirFromRunDir(activeRunDir)
+      : resolve(getProjectRoot(), getConfig().storage.base_dir)
+    return persistOverviewToDisk(
+      activeRun?.run_data_dir,
+      legacyBaseDir,
+      overview,
+      outputDirOverride,
+    )
   },
 }
 
