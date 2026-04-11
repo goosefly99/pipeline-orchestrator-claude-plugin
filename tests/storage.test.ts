@@ -3,7 +3,16 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { storeArtifact, loadArtifact, listArtifacts, buildArtifactSummary } from '../storage.ts'
+import {
+  storeArtifact,
+  loadArtifact,
+  listArtifacts,
+  buildArtifactSummary,
+  sanitizeRunName,
+  sanitizeRunTimestamp,
+  getRunDataDir,
+  getArtifactDir,
+} from '../storage.ts'
 import type { StorageConfig } from '../types.ts'
 
 let tempDir: string
@@ -165,5 +174,175 @@ describe('buildArtifactSummary', () => {
     const summary = buildArtifactSummary([1, 2, 3], 'specs', 'array.json')
     assert.equal(summary.key_count, 3)
     assert.deepEqual(summary.preview_keys, ['0', '1', '2'])
+  })
+})
+
+// ── Per-Run Hierarchical Artifact Directory Helpers (Feature C) ─────
+
+describe('sanitizeRunName', () => {
+  it('passes through plain ASCII letters and digits unchanged (lowercased)', () => {
+    assert.equal(sanitizeRunName('abc123'), 'abc123')
+    assert.equal(sanitizeRunName('ABC123'), 'abc123')
+  })
+
+  it('preserves single hyphens between word groups', () => {
+    assert.equal(sanitizeRunName('fix-quality-gate'), 'fix-quality-gate')
+  })
+
+  it('replaces spaces and punctuation with hyphens and collapses runs', () => {
+    assert.equal(sanitizeRunName('Fix Quality Gate'), 'fix-quality-gate')
+    assert.equal(sanitizeRunName('fix:quality_gate.run'), 'fix-quality-gate-run')
+  })
+
+  it('strips Windows-unsafe characters (`\\ / : * ? " < > |`)', () => {
+    const sanitized = sanitizeRunName('a\\b/c:d*e?f"g<h>i|j')
+    // Each unsafe char becomes '-' and runs collapse.
+    assert.equal(sanitized, 'a-b-c-d-e-f-g-h-i-j')
+    // Spot-check none of the unsafe characters survive.
+    for (const ch of ['\\', '/', ':', '*', '?', '"', '<', '>', '|']) {
+      assert.ok(!sanitized.includes(ch), `unsafe char ${ch} should be stripped`)
+    }
+  })
+
+  it('replaces non-ASCII / Unicode characters with hyphens', () => {
+    // Cyrillic, accented Latin, CJK and emoji all collapse to hyphens.
+    assert.equal(sanitizeRunName('тест-фикс'), 'unnamed-run')
+    assert.equal(sanitizeRunName('café-fix'), 'caf-fix')
+    assert.equal(sanitizeRunName('修复-bug'), 'bug')
+    assert.equal(sanitizeRunName('rocket-🚀-launch'), 'rocket-launch')
+  })
+
+  it('trims leading and trailing hyphens after sanitization', () => {
+    assert.equal(sanitizeRunName('  --fix--bug--  '), 'fix-bug')
+    assert.equal(sanitizeRunName('---'), 'unnamed-run')
+  })
+
+  it('truncates to 64 characters', () => {
+    const long = 'a'.repeat(200)
+    const sanitized = sanitizeRunName(long)
+    assert.equal(sanitized.length, 64)
+    assert.ok(sanitized.split('').every(c => c === 'a'))
+  })
+
+  it('truncation does not leave a trailing hyphen', () => {
+    // 63 chars of 'a' then a non-hyphen, then chars that become hyphens.
+    // After replacement at exactly the 64-char boundary the helper trims any
+    // trailing hyphen from the cut.
+    const input = 'a'.repeat(63) + ' ' + 'b'.repeat(10)
+    const sanitized = sanitizeRunName(input)
+    assert.equal(sanitized.length, 63, 'trailing hyphen at slice boundary should be trimmed')
+    assert.ok(!sanitized.endsWith('-'))
+  })
+
+  it('returns "unnamed-run" for empty / whitespace / non-string inputs', () => {
+    assert.equal(sanitizeRunName(''), 'unnamed-run')
+    assert.equal(sanitizeRunName('   '), 'unnamed-run')
+    assert.equal(sanitizeRunName('!!!'), 'unnamed-run')
+    // Defensive — runtime callers may pass undefined/null despite the type sig.
+    assert.equal(sanitizeRunName(undefined as unknown as string), 'unnamed-run')
+    assert.equal(sanitizeRunName(null as unknown as string), 'unnamed-run')
+  })
+})
+
+describe('sanitizeRunTimestamp', () => {
+  it('replaces colons and dots with hyphens', () => {
+    assert.equal(sanitizeRunTimestamp('2026-04-10T09:13:58Z'), '2026-04-10T09-13-58Z')
+    assert.equal(sanitizeRunTimestamp('2026-04-10T09:13:58.123Z'), '2026-04-10T09-13-58-123Z')
+  })
+
+  it('passes through hyphenated date and timezone marker', () => {
+    const result = sanitizeRunTimestamp('2026-04-10T09:13:58Z')
+    assert.ok(result.startsWith('2026-04-10T'))
+    assert.ok(result.endsWith('Z'))
+  })
+
+  it('contains no Windows-unsafe characters', () => {
+    const result = sanitizeRunTimestamp('2026-04-10T09:13:58.123Z')
+    for (const ch of [':', '.', '/', '\\', '*', '?', '"', '<', '>', '|']) {
+      assert.ok(!result.includes(ch), `unsafe char ${ch} should be stripped`)
+    }
+  })
+
+  it('returns empty string for empty / non-string input', () => {
+    assert.equal(sanitizeRunTimestamp(''), '')
+    assert.equal(sanitizeRunTimestamp(undefined as unknown as string), '')
+    assert.equal(sanitizeRunTimestamp(null as unknown as string), '')
+  })
+})
+
+describe('getRunDataDir', () => {
+  it('joins baseDir + "runs" + sanitized name-timestamp segment', () => {
+    const dir = getRunDataDir('pipeline_mcp_data', 'fix-quality-gate', '2026-04-10T09:13:58Z')
+    assert.equal(dir, join('pipeline_mcp_data', 'runs', 'fix-quality-gate-2026-04-10T09-13-58Z'))
+  })
+
+  it('always sits under {baseDir}/runs/', () => {
+    const dir = getRunDataDir('pipeline_mcp_data', 'My Run', '2026-04-10T09:13:58Z')
+    assert.ok(dir.includes(join('pipeline_mcp_data', 'runs')))
+  })
+
+  it('sanitizes the runName component (lowercases, replaces unsafe chars)', () => {
+    const dir = getRunDataDir('base', 'Fix:Quality/Gate*Mismatch', '2026-04-10T09:13:58Z')
+    assert.ok(dir.endsWith(join('runs', 'fix-quality-gate-mismatch-2026-04-10T09-13-58Z')))
+  })
+
+  it('omits the timestamp suffix when timestamp is empty', () => {
+    const dir = getRunDataDir('base', 'fix-bug', '')
+    assert.equal(dir, join('base', 'runs', 'fix-bug'))
+  })
+
+  it('falls back to "unnamed-run" when runName sanitizes to empty', () => {
+    const dir = getRunDataDir('base', '!!!', '2026-04-10T09:13:58Z')
+    assert.equal(dir, join('base', 'runs', 'unnamed-run-2026-04-10T09-13-58Z'))
+  })
+
+  it('produces no Windows-unsafe characters in the final dir name', () => {
+    const dir = getRunDataDir('base', 'a/b\\c:d', '2026-04-10T09:13:58.123Z')
+    // Strip the join separators (which are platform-native) before checking.
+    const dirName = dir.split(/[\\/]/).pop() ?? ''
+    for (const ch of [':', '.', '*', '?', '"', '<', '>', '|']) {
+      assert.ok(!dirName.includes(ch), `unsafe char ${ch} should not appear in dir name`)
+    }
+  })
+})
+
+describe('getArtifactDir', () => {
+  const runDataDir = join('pipeline_mcp_data', 'runs', 'my-run-2026-04-10T09-13-58Z')
+
+  it('joins runDataDir with the curated collections subtype', () => {
+    assert.equal(
+      getArtifactDir(runDataDir, 'collections/curated'),
+      join(runDataDir, 'collections', 'curated'),
+    )
+  })
+
+  it('joins runDataDir with the raw collections subtype', () => {
+    assert.equal(
+      getArtifactDir(runDataDir, 'collections/raw'),
+      join(runDataDir, 'collections', 'raw'),
+    )
+  })
+
+  it('joins runDataDir with the debates subtype', () => {
+    assert.equal(getArtifactDir(runDataDir, 'debates'), join(runDataDir, 'debates'))
+  })
+
+  it('joins runDataDir with the overviews subtype', () => {
+    assert.equal(getArtifactDir(runDataDir, 'overviews'), join(runDataDir, 'overviews'))
+  })
+
+  it('joins runDataDir with the specs subtype', () => {
+    assert.equal(getArtifactDir(runDataDir, 'specs'), join(runDataDir, 'specs'))
+  })
+
+  it('joins runDataDir with the scaffold subtype', () => {
+    assert.equal(getArtifactDir(runDataDir, 'scaffold'), join(runDataDir, 'scaffold'))
+  })
+
+  it('uses platform-native separators on the runDataDir prefix', () => {
+    // The leading runDataDir is platform-joined; we should not see a stray
+    // POSIX slash injected by the helper itself.
+    const dir = getArtifactDir(runDataDir, 'overviews')
+    assert.ok(dir.startsWith(runDataDir))
   })
 })
