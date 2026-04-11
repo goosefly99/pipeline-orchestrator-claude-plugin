@@ -12,6 +12,24 @@ version = "1.0.0"
 description = "DAG pipeline: research discovery, curation, concept extraction, design synthesis, and implementation scaffolding with optional adversarial debate, codebase analysis, and knowledge base integration"
 
 # ── Phase Definitions ───────────────────────────────────────
+#
+# Per-phase model overrides (Feature B):
+#   Each [phases.<name>] block may declare an optional `model` field giving
+#   the concrete Claude model ID the spawned subagent should use. Precedence
+#   at `pre_start` hook fire time is:
+#     1. Phase-specific `model` in this file                  (highest)
+#     2. `run_parameters.phase_model` from pre_pipeline_init  (run-scoped default)
+#     3. Hard-coded default `"claude-sonnet-4-6"`             (fallback)
+#
+#   Convention in this file:
+#     - Planning-heavy phases (design_synthesis, debate, implementation_scaffold)
+#       use `claude-opus-4-6` — deeper reasoning, architectural decisions,
+#       adversarial synthesis.
+#     - Bounded execution phases (document_ingestion, research_discovery,
+#       curation, concept_extraction, codebase_analysis, validation) use
+#       `claude-sonnet-4-6` — faster and cheaper for well-scoped work.
+#
+#   Omit `model` entirely to fall through to `run_parameters.phase_model`.
 
 [phases.document_ingestion]
 id = "I"
@@ -21,6 +39,7 @@ outputs = ["raw-collection"]
 tools = ["ingest_documents", "web_search"]
 entry_point = true
 optional = true
+model = "claude-sonnet-4-6"
 
 [phases.research_discovery]
 id = 0
@@ -34,6 +53,7 @@ tools = [
   "WebFetch", "Firecrawl", "Read",
 ]
 entry_point = true
+model = "claude-sonnet-4-6"
 
 [phases.curation]
 id = 1
@@ -42,6 +62,7 @@ inputs = ["raw-collection"]
 outputs = ["curated-collection"]
 tools = []  # Claude synthesis: reads raw collection, produces curated JSON
 entry_point = true
+model = "claude-sonnet-4-6"
 
 [phases.concept_extraction]
 id = 2
@@ -51,6 +72,7 @@ outputs = ["knowledge-overview"]
 tools = ["cc_load_collection", "cc_query", "cc_get_items", "cc_collect_concepts", "cc_save_overview"]
 entry_point = true
 optional = true
+model = "claude-sonnet-4-6"
 
 [phases.codebase_analysis]
 id = "C"
@@ -60,6 +82,7 @@ outputs = ["codebase-requirements"]
 tools = []  # Agent reads filesystem directly
 entry_point = true
 optional = true
+model = "claude-sonnet-4-6"
 
 [phases.design_synthesis]
 id = 3
@@ -73,6 +96,7 @@ tools = [
   "kb_search", "kb_sql_query",
 ]
 entry_point = true
+model = "claude-opus-4-6"
 
 [phases.debate]
 id = "D"
@@ -84,6 +108,7 @@ tools = ["kb_search", "kb_sql_query"]  # agents can query KBs during debate
 reusable = true
 entry_point = false
 optional = true
+model = "claude-opus-4-6"
 
 [phases.validation]
 id = 4
@@ -94,6 +119,7 @@ outputs = ["validation-report", "design-spec", "research-manifest"]
 output_mode = "conditional"  # always produces validation-report; additionally updates design-spec normally, or emits research-manifest if knowledge gaps found
 tools = ["WebFetch", "Firecrawl", "Grep", "kb_search", "kb_sql_query"]
 entry_point = true
+model = "claude-sonnet-4-6"
 
 [phases.implementation_scaffold]
 id = 5
@@ -107,6 +133,7 @@ tools = [
   "kb_search", "kb_sql_query",
 ]
 entry_point = true
+model = "claude-opus-4-6"
 
 # ── DAG Edges ───────────────────────────────────────────────
 
