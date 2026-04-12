@@ -2,7 +2,7 @@
 // run-tests.mjs — Test harness for Claude Code hook scripts
 // Pipes JSON fixtures through scripts and validates exit codes + output structure
 
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, utimesSync, mkdtempSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -780,6 +780,29 @@ test('generate-settings.mjs produces quoted node command paths', () => {
   } finally {
     rmSync(tmpHome, { recursive: true, force: true })
   }
+})
+
+test('readStdin fails open when stdin exceeds 10 MB', () => {
+  // Pipe 15 MB of padding into any hook script; assert the hook emits
+  // {permissionDecision: 'allow'} on stdout and exits 0. Use dag-guard.mjs
+  // as a representative consumer of readStdin.
+  //
+  // Must use spawnSync (not execFileSync) because the hook calls
+  // process.exit(0) from inside readStdin when the cap trips, closing
+  // stdin before the parent finishes writing the 15 MB payload. That
+  // surfaces as a write EPIPE on the parent side and execFileSync
+  // converts any such spawn-level error into a thrown exception that
+  // hides stdout. spawnSync returns the collected stdout regardless.
+  const payload = 'x'.repeat(15 * 1024 * 1024)
+  const result = spawnSync('node', [join(SCRIPTS_DIR, 'dag-guard.mjs')], {
+    input: payload,
+    encoding: 'utf-8',
+    timeout: 15_000,
+    maxBuffer: 20 * 1024 * 1024,
+  })
+  assertEqual(result.status, 0, 'Exit code')
+  const parsed = JSON.parse((result.stdout || '').trim())
+  assertEqual(parsed.permissionDecision, 'allow', 'Permission decision')
 })
 
 // ── Cleanup ────────────────────────────────────────────────

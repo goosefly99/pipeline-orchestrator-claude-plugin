@@ -7,18 +7,34 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 
+/** Maximum bytes of stdin a hook will accept. Inputs larger than this
+ *  trigger a fail-open response and a warning on stderr. */
+export const MAX_STDIN_BYTES = 10 * 1024 * 1024  // 10 MB
+
 /**
- * Read all of stdin as a UTF-8 string. Simple unbounded reader used by
- * every hook script's top-of-file `for await (const chunk of process.stdin)`
- * pattern. Returns '' when stdin is empty or already closed.
+ * Read all of stdin as a UTF-8 string with a 10 MB size cap. On cap
+ * exceeded, writes a warning to stderr, emits a fail-open response
+ * (`{ permissionDecision: 'allow' }`) on stdout, and exits the process
+ * with code 0. Callers do not need to handle the overflow case.
  *
- * NOTE: a size cap is added in Fix 6.11; keep this function minimal here
- * so the 6.11 diff is scoped to cap + test only.
+ * Returns '' when stdin is empty or already closed.
  */
 export async function readStdin() {
   let input = ''
+  let total = 0
   for await (const chunk of process.stdin) {
-    input += chunk
+    // chunk may be Buffer or string depending on encoding; length is bytes
+    // for Buffer and chars for string. Tracking on chunk.length is a safe
+    // upper-bound either way.
+    total += chunk.length
+    if (total > MAX_STDIN_BYTES) {
+      process.stderr.write(
+        `[hooks/common] stdin exceeded ${MAX_STDIN_BYTES} bytes — failing open\n`,
+      )
+      process.stdout.write(JSON.stringify({ permissionDecision: 'allow' }))
+      process.exit(0)
+    }
+    input += chunk.toString()
   }
   return input
 }
