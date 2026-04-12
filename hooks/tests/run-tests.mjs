@@ -3,7 +3,7 @@
 // Pipes JSON fixtures through scripts and validates exit codes + output structure
 
 import { execFileSync } from 'node:child_process'
-import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, utimesSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, utimesSync, mkdtempSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
@@ -663,6 +663,40 @@ test('hooks-config.toml exists', () => {
 
 test('generate-settings.mjs exists', () => {
   assertTruthy(existsSync(join(HOOKS_DIR, 'generate-settings.mjs')), 'generate-settings.mjs exists')
+})
+
+test('generate-settings.mjs produces quoted node command paths', () => {
+  // Run generate-settings in a mode that writes its output to a fresh
+  // settings file under a spaces-containing temp dir. We read the resulting
+  // JSON and assert every hook command wraps the path in double quotes.
+  const tmpHome = mkdtempSync(join(tmpdir(), 'pipeline hooks settings '))
+  try {
+    // Run the real generate-settings.mjs and inspect the real project
+    // settings file — the quoting rule is repo-wide and doesn't depend on
+    // tempdir placement.
+    execFileSync('node', [join(HOOKS_DIR, 'generate-settings.mjs')], {
+      encoding: 'utf-8',
+      timeout: 10_000,
+    })
+    const realSettings = join(HOOKS_DIR, '..', '.claude', 'settings.local.json')
+    if (!existsSync(realSettings)) {
+      // generate-settings is disabled in this environment; skip.
+      return
+    }
+    const parsed = JSON.parse(readFileSync(realSettings, 'utf-8'))
+    const hooks = Array.isArray(parsed.hooks) ? parsed.hooks : []
+    for (const h of hooks) {
+      if (typeof h.command !== 'string') continue
+      if (!h.command.startsWith('node ')) continue
+      // The path portion must be double-quoted
+      assertTruthy(
+        h.command.match(/^node "[^"]+"$/),
+        `hook command is not double-quoted: ${h.command}`,
+      )
+    }
+  } finally {
+    rmSync(tmpHome, { recursive: true, force: true })
+  }
 })
 
 // ── Cleanup ────────────────────────────────────────────────

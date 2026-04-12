@@ -55,7 +55,7 @@ for (const [configKey, event, matcher, scriptFile] of hookDefs) {
   const entry = {
     type: 'command',
     event,
-    command: `node ${join(scriptsDir, scriptFile).replace(/\\/g, '/')}`,
+    command: `node "${join(scriptsDir, scriptFile).replace(/\\/g, '/').replace(/"/g, '\\"')}"`,
   }
   if (matcher) {
     entry.matcher = matcher
