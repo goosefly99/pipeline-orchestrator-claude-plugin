@@ -324,3 +324,15 @@ vector_indices = "kb/vectors"
 # trigger = "pre_pipeline_init"
 # command = "hooks/pre-pipeline-init.example.js"
 # timeout_ms = 5000
+#
+# To enable Feature B per-phase subagent execution, uncomment the block below.
+# When enabled, every pipeline_start_phase call will fire this hook, which
+# emits an agent_directive telling the MCP client to spawn a general-purpose
+# Agent subagent with the precedence-resolved model. The subagent owns
+# pipeline_complete_phase / pipeline_fail_phase for the phase.
+#
+# [[hooks]]
+# trigger = "pre_start"
+# phase_filter = "*"
+# command = "hooks/pre-phase-start.example.js"
+# timeout_ms = 10000
