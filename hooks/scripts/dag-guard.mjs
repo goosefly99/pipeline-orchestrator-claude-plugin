@@ -90,9 +90,13 @@ try {
     process.exit(0)
   }
 
+  // DAG semantics match dag.ts:59 — a required predecessor is satisfied
+  // by EITHER status 'completed' OR 'skipped'. A missing phase or any
+  // other status (pending, in_progress, failed) is unmet.
   const unmetDeps = requiredDeps.filter(dep => {
     const phase = runState.phases[dep]
-    return !phase || phase.status !== 'completed'
+    if (!phase) return true
+    return phase.status !== 'completed' && phase.status !== 'skipped'
   })
 
   if (unmetDeps.length > 0) {

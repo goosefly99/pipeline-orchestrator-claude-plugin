@@ -66,10 +66,11 @@ function getNextPhases(runState) {
         continue
       }
 
-      // Check if all required deps are completed
+      // DAG semantics match dag.ts:59 — a required predecessor is
+      // satisfied by EITHER 'completed' OR 'skipped'.
       const allMet = requiredDeps.every(dep => {
         const depState = runState.phases[dep]
-        return depState && depState.status === 'completed'
+        return !!depState && (depState.status === 'completed' || depState.status === 'skipped')
       })
 
       if (allMet && requiredDeps.length > 0) {
