@@ -82,7 +82,10 @@ describe('collectConcepts', () => {
     assert.ok(Array.isArray(t.themes))
     assert.equal(t.summary, '')
     assert.deepEqual(t.concepts, [])
-    assert.deepEqual(t.themes, [])
+    // themes seeds a placeholder object so the AI knows the required field names
+    assert.ok(t.themes.length > 0, 'themes must have a placeholder for concept_names guidance')
+    const placeholder = t.themes[0] as unknown as Record<string, unknown>
+    assert.ok(Object.prototype.hasOwnProperty.call(placeholder, 'concept_names'), 'placeholder must have concept_names key')
   })
 
   it('template sources list all items from all groups', () => {
