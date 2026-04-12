@@ -330,6 +330,30 @@ describe('handleStoreArtifact — versioning and lineage', () => {
     assert.equal(ref.version, 1)
     assert.equal(ref.parent_artifact, 'raw/source.json')
   })
+
+  it('rejects storing a validation-report under storage_key="specs"', () => {
+    const runState = { current: initRun('run-conflict-1', '1.0.0', ['validation'], runDir) }
+    const ctx = makeCtx(tempDir, runState, runDir)
+
+    assert.throws(
+      () => handleStoreArtifact({
+        storage_key: 'specs',
+        file_name: 'validation-report.json',
+        artifact: { report_id: 'vr-001', findings: [] },
+        artifact_type: 'validation-report',
+        phase: 'validation',
+      }, ctx),
+      (err: unknown) => {
+        assert.ok(err instanceof PipelineError, 'should be a PipelineError')
+        assert.equal(err.error_class, 'validation_error')
+        assert.ok(
+          err.message.includes('"validation-report"') && err.message.includes('storage_key="specs"'),
+          'error message should name the conflicting type and key',
+        )
+        return true
+      },
+    )
+  })
 })
 
 describe('handleListArtifacts — version and parent_artifact in response', () => {

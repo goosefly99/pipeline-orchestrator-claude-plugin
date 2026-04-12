@@ -190,6 +190,33 @@ export function handleStoreArtifact(args: Record<string, unknown>, ctx: Artifact
     })
   }
 
+  // Guard: prevent artifact types from being stored under a storage_key that
+  // belongs to a different type, which would cause resolveInputArtifacts to
+  // return the wrong artifact for downstream phases.
+  const STORAGE_KEY_CONFLICTS: Readonly<Record<string, readonly string[]>> = {
+    'validation-report':     ['specs'],
+    'debate-transcript':     ['specs'],
+    'knowledge-overview':    ['specs'],
+    'research-manifest':     ['specs'],
+    'codebase-requirements': ['specs'],
+  }
+  const conflictingKeys = STORAGE_KEY_CONFLICTS[artifactType]
+  if (conflictingKeys?.includes(storageKey)) {
+    throw new PipelineError(
+      `Cannot store artifact of type "${artifactType}" under storage_key="${storageKey}": ` +
+      `this directory is reserved for "design-spec" artifacts and "${artifactType}" would shadow them. ` +
+      `Use a storage_key that matches the artifact type (e.g., "reports" for validation-report, ` +
+      `"overviews" for knowledge-overview, "debates" for debate-transcript).`,
+      'validation_error',
+      {
+        recovery_action: `Choose a storage_key appropriate for "${artifactType}". ` +
+          `Canonical keys: validation-report → "reports", knowledge-overview → "overviews", ` +
+          `debate-transcript → "debates", research-manifest → "manifests".`,
+        details: { artifact_type: artifactType, storage_key: storageKey },
+      },
+    )
+  }
+
   const activeRunDir = ctx.getActiveRunDir()
   const baseDir = ctx.baseDirFromRunDir(activeRunDir)
   const sc = ctx.getStorageConfig(baseDir)
