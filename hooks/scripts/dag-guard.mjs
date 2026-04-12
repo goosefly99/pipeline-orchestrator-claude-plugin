@@ -9,7 +9,6 @@ import { parse } from 'smol-toml'
 import { readStdin, findLatestRunState } from '../lib/common.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const CONFIG_PATH = join(__dirname, '..', 'runtime-config.json')
 const RUNS_DIR = join(__dirname, '..', '..', 'pipeline_mcp_data', 'runs')
 const PIPELINE_TOML = join(__dirname, '..', '..', 'pipeline', 'pipeline.toml')
 
