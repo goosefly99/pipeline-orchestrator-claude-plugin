@@ -571,6 +571,56 @@ test('allows when no version guard configured', () => {
   cleanupConfig()
 })
 
+test('denies version-bypass path after normalization collapses ..', () => {
+  // Pre-fix: `/project/v0.4.0/../v0.3.0/specs.json` passed the substring
+  // check for the current version (v0.4.0 literally appeared in the path)
+  // while actually resolving to v0.3.0 — a bypass.
+  // Post-fix: node:path.normalize collapses `v0.4.0/..` BEFORE the
+  // substring check, so the matcher only sees `v0.3.0` and denies. This
+  // test locks the bypass closed regardless of whether any unresolved `..`
+  // remains; the security property is "crafted path does not read from the
+  // older version tree".
+  setupConfig({
+    file_read_version_guard: {
+      enabled: true,
+      present_version_in_development: 'v0.4.0',
+      previous_versions: ['v0.3.0', 'v0.2.0'],
+    },
+  })
+  const result = runHook('file-read-version-guard.mjs', {
+    event: 'PreToolUse',
+    tool_name: 'Read',
+    tool_input: { file_path: '/project/v0.4.0/../v0.3.0/specs.json' },
+    session_id: 'test',
+  })
+  assertEqual(result.parsed.permissionDecision, 'deny', 'Permission decision')
+  assertIncludes(result.parsed.deny_reason, 'v0.3.0', 'Deny reason mentions outdated version')
+  cleanupConfig()
+})
+
+test('denies crafted relative path with unresolved ..', () => {
+  // `docs/../../../etc/passwd` normalizes to `../../etc/passwd` (posix) or
+  // `..\..\etc\passwd` (win32) — both retain unresolved `..` segments
+  // because there's no leading prefix long enough to cancel them. The
+  // normalization-deny branch must fire on both platforms.
+  setupConfig({
+    file_read_version_guard: {
+      enabled: true,
+      present_version_in_development: 'v0.4.0',
+      previous_versions: ['v0.3.0'],
+    },
+  })
+  const result = runHook('file-read-version-guard.mjs', {
+    event: 'PreToolUse',
+    tool_name: 'Read',
+    tool_input: { file_path: 'docs/../../../etc/passwd' },
+    session_id: 'test',
+  })
+  assertEqual(result.parsed.permissionDecision, 'deny', 'Permission decision')
+  assertIncludes(result.parsed.deny_reason, 'normalization', 'Deny reason')
+  cleanupConfig()
+})
+
 console.log('\n=== Post Phase Complete (post-phase-complete.mjs) ===\n')
 
 test('produces systemMessage on phase completion', () => {

@@ -3,7 +3,7 @@
 // Prevents reading files that contain outdated version tags in their paths
 
 import { readFileSync, existsSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { join, dirname, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -62,8 +62,19 @@ try {
     process.exit(0)
   }
 
-  // Normalize the file path for comparison
-  const normalizedPath = filePath.toLowerCase().replace(/\\/g, '/')
+  // Normalize first via node:path.normalize, THEN case-fold and unify slashes.
+  // Any remaining '..' segment after normalization is rejected — this closes
+  // the bypass where a crafted relative path could encode an old-version read
+  // while appearing to contain the current version string.
+  const pathNormalized = normalize(filePath)
+  if (pathNormalized.includes('..')) {
+    process.stdout.write(JSON.stringify({
+      permissionDecision: 'deny',
+      deny_reason: `file-read-version-guard: path contains unresolved '..' after normalization — refusing to read "${filePath}"`,
+    }))
+    process.exit(0)
+  }
+  const normalizedPath = pathNormalized.toLowerCase().replace(/\\/g, '/')
 
   // Check if the file path contains any outdated version patterns
   for (const oldVersion of previousVersions) {
