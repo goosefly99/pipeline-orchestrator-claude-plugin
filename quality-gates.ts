@@ -18,7 +18,13 @@ export function checkFieldPresent(
     return { check_type: 'field_present', passed: false, message: 'Check misconfigured: missing "field" param' }
   }
 
-  const value = artifact[field]
+  // Support dot-notation paths like "architecture.components"
+  const value = field.includes('.')
+    ? field.split('.').reduce<unknown>((obj, key) => {
+        if (obj == null || typeof obj !== 'object') return undefined
+        return (obj as Record<string, unknown>)[key]
+      }, artifact)
+    : artifact[field]
   if (value === undefined || value === null) {
     return { check_type: 'field_present', passed: false, message: `Required field "${field}" is missing` }
   }

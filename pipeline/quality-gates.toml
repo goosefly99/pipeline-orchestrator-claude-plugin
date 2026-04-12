@@ -30,7 +30,7 @@ on_failure = "block"
 check_type = "field_present"
 description = "Design spec must include components"
 [gates.checks.params]
-field = "components"
+field = "architecture.components"
 artifact_type = "design-spec"
 
 [[gates]]
