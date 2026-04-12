@@ -35,12 +35,26 @@ function getPricing(model) {
   return MODEL_PRICING.default
 }
 
+/**
+ * Coerce an arbitrary value to a finite number. Returns 0 for NaN,
+ * Infinity, -Infinity, null, undefined, objects, arrays, or strings that
+ * don't parse as finite numerics. Used to make token-count arithmetic
+ * resistant to malformed transcript entries and malicious string inputs.
+ */
+function safeNumber(value) {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : 0
+}
+
 function calculateCost(usage, model) {
   const pricing = getPricing(model)
-  const inputTokens = usage.input_tokens || 0
-  const outputTokens = usage.output_tokens || 0
-  const cacheWrite = usage.cache_creation_input_tokens || 0
-  const cacheRead = usage.cache_read_input_tokens || 0
+  // All four fields routed through safeNumber — malformed transcript entries
+  // or attacker-supplied strings coerce to 0 instead of NaN-poisoning the
+  // total cost and silently bypassing the budget check downstream.
+  const inputTokens = safeNumber(usage.input_tokens)
+  const outputTokens = safeNumber(usage.output_tokens)
+  const cacheWrite = safeNumber(usage.cache_creation_input_tokens)
+  const cacheRead = safeNumber(usage.cache_read_input_tokens)
 
   return (
     (inputTokens * pricing.input) / 1_000_000 +
@@ -94,6 +108,19 @@ try {
   const transcriptPath = hookInput.transcript_path
 
   const totalCost = await sumTranscriptCost(transcriptPath)
+
+  // Defense-in-depth: if calculateCost produced NaN or Infinity despite the
+  // safeNumber guard (e.g. a pricing lookup issue), treat it as budget-
+  // exceeded. Fail-closed rather than letting non-finite math silently
+  // bypass the comparison.
+  if (!Number.isFinite(totalCost)) {
+    process.stdout.write(JSON.stringify({
+      permissionDecision: 'deny',
+      deny_reason: `Token budget guard: computed cost was non-finite — refusing to proceed. Inspect transcript_path and retry.`,
+    }))
+    process.exit(0)
+  }
+
   const usagePct = (totalCost / maxBudget) * 100
 
   if (totalCost >= maxBudget) {

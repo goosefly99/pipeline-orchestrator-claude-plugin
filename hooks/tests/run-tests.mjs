@@ -200,6 +200,39 @@ test('denies when transcript cost exceeds budget', () => {
   cleanupConfig()
 })
 
+test('coerces string token counts without bypassing the budget', () => {
+  setupConfig({ token_budget_guard: { max_extra_usage_usd: 0.0001, warn_at_pct: 80 } })
+  const transcriptDir = join(tmpdir(), 'pipeline-hook-test-transcript-strings')
+  if (!existsSync(transcriptDir)) mkdirSync(transcriptDir, { recursive: true })
+  const transcriptPath = join(transcriptDir, 'transcript.jsonl')
+
+  // Attacker-supplied strings. Pre-fix, `"99999" || 0` evaluated to `"99999"`
+  // and `"99999" * pricing.input` yielded a Number, but `undefined * pricing`
+  // yielded NaN and `NaN >= maxBudget` was false, bypassing the guard.
+  // Post-fix: safeNumber coerces all four fields, and Infinity-poisoning
+  // fails closed on the non-finite check.
+  writeFileSync(transcriptPath, JSON.stringify({
+    usage: {
+      input_tokens: '99999',
+      output_tokens: '50000',
+      cache_creation_input_tokens: null,
+      cache_read_input_tokens: undefined,
+    },
+    model: 'claude-opus-4-20250514',
+  }) + '\n', 'utf-8')
+
+  const result = runHook('token-budget-guard.mjs', {
+    ...JSON.parse(readFileSync(join(FIXTURES_DIR, 'token-budget.json'), 'utf-8')),
+    transcript_path: transcriptPath,
+  })
+  // 99999 opus input tokens at $15/Mtok is ~$1.50; 50000 output at $75/Mtok
+  // is ~$3.75. Total > $0.0001 budget → deny.
+  assertEqual(result.parsed.permissionDecision, 'deny', 'Permission decision')
+
+  rmSync(transcriptDir, { recursive: true, force: true })
+  cleanupConfig()
+})
+
 console.log('\n=== Phase Start Guard (phase-start-guard.mjs) ===\n')
 
 test('allows first phase start', () => {
