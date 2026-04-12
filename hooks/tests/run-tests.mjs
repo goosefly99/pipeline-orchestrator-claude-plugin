@@ -122,6 +122,21 @@ test('produces systemMessage when active run exists', () => {
   assertEqual(result.exitCode, 0, 'Exit code')
 })
 
+test('session-init systemMessage does not include naive "Next available" line', () => {
+  const result = runHook('session-init.mjs', 'session-start.json')
+  assertEqual(result.exitCode, 0, 'Exit code')
+  if (result.parsed && result.parsed.systemMessage) {
+    const msg = result.parsed.systemMessage
+    assertEqual(
+      msg.includes('Next available:'),
+      false,
+      'systemMessage must not include the naive "Next available:" line (Fix 6.6)',
+    )
+    // The explicit instruction to call pipeline_next_phases MUST be present
+    assertIncludes(msg, 'pipeline_next_phases', 'Instructs caller to use pipeline_next_phases')
+  }
+})
+
 console.log('\n=== Send Message Guard (send-message-guard.mjs) ===\n')
 
 test('returns ask when mode is ask', () => {

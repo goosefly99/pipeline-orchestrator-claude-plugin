@@ -19,24 +19,24 @@ try {
     process.exit(0)
   }
 
-  // Build context summary
+  // Build context summary. The "next available phases" line was removed
+  // in Fix 6.6 because the prior implementation listed ALL pending phases
+  // without DAG dependency checks — producing misleading "next up"
+  // suggestions. Users should call pipeline_next_phases for an accurate,
+  // DAG-gated list.
   const phaseStatuses = Object.entries(latestRun.phases)
     .map(([name, p]) => `  ${name}: ${p.status}`)
     .join('\n')
-
-  const nextPhases = Object.entries(latestRun.phases)
-    .filter(([, p]) => p.status === 'pending')
-    .map(([name]) => name)
 
   const message = [
     `Active pipeline run: ${latestRun.run_id}`,
     `Status: ${latestRun.status}`,
     `Phases:\n${phaseStatuses}`,
-    nextPhases.length > 0 ? `Next available: ${nextPhases.join(', ')}` : '',
     '',
+    'Call pipeline_next_phases to see which phases are actually available (DAG-gated).',
     'Call pipeline_run_status to get full state before making changes.',
     'Consider using /clear between phases to reset context.',
-  ].filter(Boolean).join('\n')
+  ].join('\n')
 
   const response = { systemMessage: message }
   process.stdout.write(JSON.stringify(response))
