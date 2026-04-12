@@ -22,10 +22,12 @@
 | M1 — Feature C | Per-run hierarchical artifact directories | 10 | 0 | 0 | 10 | 0 |
 | M2 — Feature B | Pre-phase-start hook with Agent-per-phase execution | 10 | 0 | 0 | 10 | 0 |
 | M3 — Part 6 | Hooks code-review fixes (harness runtime) | 12 | 0 | 0 | 12 | 0 |
-| **Total** | | **42** | **0** | **0** | **42** | **0** |
+| M4 — Meta-Run Bug Fixes | 4 correctness bugs found during v0.5.0 meta-run | 4 | 4 | 0 | 0 | 0 |
+| M5 — v0.5.0 Spec Implementation | Meta-run regression test, phase event telemetry, feedback loop test | 7 | 7 | 0 | 0 | 0 |
+| **Total** | | **53** | **11** | **0** | **42** | **0** |
 
-**Current work focus:** M1 → M2 → M3 (M3 can execute in parallel with M1/M2 since it
-targets `hooks/scripts/` rather than the TypeScript MCP server).
+**Current work focus:** M4 (bug fixes, independent of each other — can run in parallel) → M5
+(v0.5.0 spec phases 0–3; Phase 1 depends on M4 being clean, Phases 0/2/3 are independent).
 
 ### Audit Confirmation (2026-04-11)
 
@@ -69,10 +71,15 @@ Verified-absent items confirmed by file absence or grep:
    ├─ Fix 3.5  ──┤
    ├─ Fix 3.6  ──┤
    ├─ Fix 3.7  ──┤
-   └─ Feat. A  ──┼──► M1 Feature C ──► M2 Feature B
-                 │
-                 └──► M3 Part 6 (orthogonal, any time)
+   └─ Feat. A  ──┼──► M1 Feature C ──► M2 Feature B ──► M4 Bug Fixes ──► M5.1 Regression Test
+                 │                                        │
+                 └──► M3 Part 6 (orthogonal, any time)   ├──► M5.0 Spec Corrections  (any time)
+                                                          ├──► M5.2–5.4 Event Telemetry (any time)
+                                                          └──► M5.5 Feedback Loop Test (any time)
 ```
+
+M4 items 4.1–4.4 are mutually independent. M5.1 (regression test) depends on M4 being
+complete (clean test baseline). All other M5 items are independent of M4.
 
 Feature C needs Feature A (`run_parameters.run_name`, `run_parameters.run_directory_timestamp`).
 Feature B needs Features A and C (reads `run_parameters.phase_model`, injects
@@ -258,6 +265,99 @@ Per the plan's ordering section (§ "Part 6 — Hooks code-review fixes — orth
 
 ---
 
+## M4 — Meta-Run Bug Fixes
+
+**Source:** Bugs #1–4 surfaced during the v0.5.0 meta-run (2026-04-11), in which the
+pipeline executed against its own codebase. All four items are mutually independent —
+they can be landed in any order as separate commits.
+
+**Rule:** Run `npm test && npm run typecheck` after each item. Land each fix as its own
+commit. Update the Status column in the same commit.
+
+### Tasks
+
+| ID | Bug | Description | Target Files | Depends On | Status |
+|----|:---:|-------------|--------------|:----------:|:------:|
+| 4.1 | #1 | **`cc_collect_concepts` theme template emits `concepts` instead of `concept_names`.**  The theme-object serializer in `cc-handlers.ts` uses `"concepts": [...]` but `pipeline/schemas/knowledge-overview.json` requires `"concept_names": [...]`. `pipeline_register_artifact` with `validate: true` correctly surfaces the mismatch; the workaround (manual file edit) should never be necessary. Fix the template in the handler. Add a test case that generates an overview via `cc_collect_concepts`, passes it to `cc_save_overview`, and asserts the saved file validates against the schema. | `cc-handlers.ts`, `tests/cc-handlers.test.ts` | — | Not Started |
+| 4.2 | #2 | **`checkFieldPresent` is top-level only; `design_synthesis` gate path is wrong.**  `checkFieldPresent` in `quality-gates.ts` does `artifact[field]` — one level only. The `design_synthesis` gate checks `field = "components"` but the `design-spec` schema places components at `architecture.components`. Any spec that does not mirror `architecture.components` at the top level silently fails the gate. Fix: extend `checkFieldPresent` to resolve dot-notation paths (e.g., `"architecture.components"` → `artifact.architecture?.components`). Update `pipeline/quality-gates.toml` `design_synthesis` block to use `"architecture.components"` as the field value. Add unit test for nested path resolution; add regression test confirming a spec with only `architecture.components` (no top-level mirror) now passes the gate. | `quality-gates.ts`, `pipeline/quality-gates.toml`, `tests/quality-gates.test.ts` | — | Not Started |
+| 4.3 | #3 | **`pipeline_store_artifact` allows `validation-report` artifacts to land in `specs/`, masking real design-specs.**  When the validation subagent calls `pipeline_store_artifact` with `storage_key="specs"` for a `validation-report` artifact, the file lands in `pipeline_mcp_data/specs/`. On the next `pipeline_start_phase` for `implementation_scaffold`, `resolveInputArtifacts` resolves the validation-report as the latest spec, skipping the actual design-spec. Fix: add an `ARTIFACT_TYPE_CANONICAL_KEY` map in `artifact-handlers.ts` declaring the expected `storage_key` for each artifact type (e.g., `"validation-report"` → `"validation-reports"`). Return a `HandlerResponse` error when `storage_key` resolves to a directory that belongs to a different artifact type. Update `tool-schemas.ts` to document the canonical key in the `pipeline_store_artifact` description. | `artifact-handlers.ts`, `tool-schemas.ts`, `tests/artifact-handlers.test.ts` | — | Not Started |
+| 4.4 | #4 | **Run status stays `running` after the terminal phase completes when unreachable phases remain `pending`.**  After `implementation_scaffold` (only phase with no outgoing edges) completes, `run-state.status` stays `"running"` because `research_discovery` and `debate` are still `pending`. Fix 3.1's terminal-phase detection fires only when all phases are completed or skipped; it does not account for phases that are permanently unreachable given the current artifact registry. Fix: after each `completePhase`, call `resolveNextPhases`; if it returns an empty list AND every remaining pending phase fails reachability (no registered artifact satisfies any of its required inputs), call `completeRun` to set `status = 'done'` with `completed_at`. Add test: complete the terminal phase while unreachable phases remain `pending`; assert `status === 'done'` and `completed_at` is set. | `run-state.ts`, `lifecycle-handlers.ts`, `dag.ts`, `tests/run-state-terminal.test.ts` | — | Not Started |
+
+### Verification (M4)
+
+1. `npm run typecheck` — zero errors.
+2. `node --test tests/*.test.ts` — all 794+ tests pass including updated/new tests for 4.1–4.4.
+3. Smoke: run a `design_synthesis` phase with a spec that has `architecture.components` but no top-level `components` mirror; gate must pass (4.2).
+4. Smoke: attempt to store a `validation-report` with `storage_key="specs"`; must receive an error response (4.3).
+5. Smoke: complete `implementation_scaffold` while `research_discovery` is pending; `pipeline_run_status` must return `status: "done"` (4.4).
+
+---
+
+## M5 — v0.5.0 Spec Implementation
+
+**Source spec:** `pipeline_mcp_data/specs/pipeline-orchestrator-v0-5-0-meta-run-regression-validation---9672d965.json`
+**Scaffold roadmap:** `pipeline_mcp_data/scaffold/v0.5.0-dev-roadmap.md`
+
+**Goal:** Implement the three phases defined in the v0.5.0 regression validation spec:
+meta-run regression test suite (Phase 1), phase event telemetry (Phase 2), and validation
+feedback loop integration test (Phase 3). Phase 0 corrects two name errors in the spec
+itself before implementation begins.
+
+**Architecture constraints (from spec):**
+- No changes to `pipeline/pipeline.toml` DAG structure or phase definitions
+- No changes to `pipeline/schemas/*.json` artifact definitions
+- No new runtime dependencies
+- Flat module structure — all source files at project root
+- MCP tool names and required parameters must not change — additive parameters only
+- All 794+ tests must continue to pass
+
+### Phase 0 — Spec Corrections (Pre-Work)
+
+Two name errors in the v0.5.0 spec were caught by the validation agent during the
+meta-run (2026-04-11). Correct them before referencing the spec in implementation.
+
+| ID | Description | Target Files | Status |
+|----|-------------|--------------|:------:|
+| 5.0a | Replace `computeNextPhases` with `resolveNextPhases` throughout the spec JSON. The canonical function in `dag.ts` is `resolveNextPhases` — no function named `computeNextPhases` exists. Affected: `architecture.integration_points` and `implementation.phases[2].tasks`. | `pipeline_mcp_data/specs/pipeline-orchestrator-v0-5-0-meta-run-regression-validation---9672d965.json` | Not Started |
+| 5.0b | Remove `PhaseStartedEvent` interface references in the spec. No such interface exists — the `phase_started` event is an inline discriminant member of the `LifecycleEvent` union in `types.ts` (discriminant: `event === 'phase_started'`). Update the spec to reference `LifecycleEvent` and note the discriminant. Affected: `architecture.components[1]` (PhaseEventTelemetry responsibilities) and `implementation.phases[1].tasks`. | `pipeline_mcp_data/specs/pipeline-orchestrator-v0-5-0-meta-run-regression-validation---9672d965.json` | Not Started |
+
+### Phase 1 — Meta-Run Regression Test Suite
+
+**Deliverable:** `tests/meta-run-regression.test.ts` — all 6 regression checklist assertions green.
+
+| ID | Description | Target Files | Depends On | Status |
+|----|-------------|--------------|:----------:|:------:|
+| 5.1 | Implement `tests/meta-run-regression.test.ts`. Initialize a run with `run_name='meta-regression'` and `run_directory_timestamp` (ISO timestamp) so per-run layout activates. Drive phases in DAG order — codebase_analysis → curation → concept_extraction → design_synthesis → validation → implementation_scaffold — using minimal valid stub artifacts. Use a `tmp` directory for `pipeline_mcp_data` (follow the pattern in `tests/per-run-paths.test.ts`). Do not mock MCP tools; call real handlers via context injection. Assert: (a) exactly one `phase_completed` per phase in `events.jsonl`; (b) `gate_evaluated` and `artifact_stored` events present; (c) all registered artifact paths start with `pipeline_mcp_data/runs/meta-regression-{ts}/`; (d) `run-state.status === 'done'` with `completed_at` set after `implementation_scaffold` completes; (e) `agent_directive` present in start-phase response for each phase when `pre_start` hook is enabled. | `tests/meta-run-regression.test.ts` (new) | M4, 5.0a–5.0b | Not Started |
+
+### Phase 2 — Phase Event Telemetry
+
+**Deliverable:** `resolved_model` field on `phase_started` events in `events.jsonl` and in `pipeline_run_status` response.
+
+| ID | Description | Target Files | Depends On | Status |
+|----|-------------|--------------|:----------:|:------:|
+| 5.2 | Add optional `resolved_model?: string` to the `phase_started` discriminant in the `LifecycleEvent` union in `types.ts`. Populate `resolved_model` in the `phase_started` event write inside `handleStartPhase` (lifecycle-handlers.ts) immediately after model precedence resolution. Field is additive — existing event parsers using strict destructuring are unaffected. | `types.ts`, `lifecycle-handlers.ts` | — | Not Started |
+| 5.3 | Add `resolved_model` to the `pipeline_run_status` response data for the current in-progress phase, alongside the existing `recommended_action` field. Derive it from the last `phase_started` event for the active phase, or re-resolve the model using the same precedence chain. | `lifecycle-handlers.ts` | 5.2 | Not Started |
+| 5.4 | Update `tests/lifecycle-handlers.test.ts` to assert `resolved_model` is present in `phase_started` events and matches the expected model string per phase (Sonnet for bounded phases, Opus for planning phases per `pipeline.toml`). | `tests/lifecycle-handlers.test.ts` | 5.2, 5.3 | Not Started |
+
+### Phase 3 — Validation Feedback Loop Integration Test
+
+**Deliverable:** `tests/validation-feedback-loop.test.ts` — feedback loop DAG routing confirmed.
+
+| ID | Description | Target Files | Depends On | Status |
+|----|-------------|--------------|:----------:|:------:|
+| 5.5 | Write `tests/validation-feedback-loop.test.ts`. Seed a minimal run state with `design_synthesis` completed (design-spec registered). Call `handleStartPhase` for validation; complete it emitting a `research-manifest` artifact (not a design-spec update) to simulate the "knowledge gaps found" path. Call `resolveNextPhases` and assert: `research_discovery` is in the available list, `implementation_scaffold` is not. Verify the artifact registry reflects the research-manifest. Cross-check the `validation → research_discovery` DAG edge in `pipeline.toml` before writing assertions; if that edge is absent, file a spec gap rather than a test bug. | `tests/validation-feedback-loop.test.ts` (new) | — | Not Started |
+
+### Verification (M5)
+
+1. `npm run typecheck` — 0 errors after all phases.
+2. `node --test tests/*.test.ts` — all 794+ tests pass plus new tests from phases 1–3 (target ≥ 800 total).
+3. `phase_started` events in `events.jsonl` contain `resolved_model` for each phase (5.2).
+4. `pipeline_run_status` returns `resolved_model` for the current in-progress phase (5.3).
+5. All artifacts for the meta-regression run land under `pipeline_mcp_data/runs/meta-regression-{ts}/` (5.1 assertion c).
+6. `run-state.status === 'done'` with `completed_at` set after `implementation_scaffold` completes in the regression test (5.1 assertion d, also verifies M4 item 4.4).
+
+---
+
 ## End-to-End Meta-Run Regression (after all milestones)
 
 After M1, M2, and M3 are all `Complete`, run the pipeline against itself with a feature
@@ -277,12 +377,14 @@ request of the form `"validate-pipeline-meta-run-2026-04-xx"` and assert:
 
 The roadmap is `Complete` when:
 
-1. All 32 remaining items in M1, M2, M3 are marked `Complete`.
-2. `npm run typecheck && node --test tests/*.test.ts` passes clean on `auto_dev`.
-3. The meta-run regression above has executed end-to-end with all assertions green.
-4. `AGENTS.md` has both the `### Phase Execution via Subagent` subsection (B9) and the
-   Per-Run Artifact Directories migration note (C10).
-5. All deferred nits from APPLIED adversarial reviews that were noted in the plan's
+1. All 42 items in M0–M3 are marked `Complete` (**already satisfied as of 2026-04-11 audit**).
+2. All 4 items in M4 (meta-run bug fixes) are marked `Complete`.
+3. All 7 items in M5 (v0.5.0 spec phases 0–3) are marked `Complete`.
+4. `npm run typecheck && node --test tests/*.test.ts` passes clean on `auto_dev` with ≥ 800 tests.
+5. The meta-run regression above has executed end-to-end with all assertions green.
+6. `AGENTS.md` has both the `### Phase Execution via Subagent` subsection (B9) and the
+   Per-Run Artifact Directories migration note (C10) — both already applied.
+7. All deferred nits from APPLIED adversarial reviews that were noted in the plan's
    status banners remain either addressed or intentionally logged as follow-ups in
    `MISTAKES.md`.
 
