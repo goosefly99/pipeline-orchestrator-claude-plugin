@@ -7,6 +7,18 @@ export interface PhaseBrief {
   phase_name: string
   description: string
   model_tier?: string
+  /**
+   * Feature B: the concrete Claude model ID resolved by `handleStartPhase`
+   * via the precedence chain (phase-specific `model` > `run_parameters.phase_model`
+   * > `'claude-sonnet-4-6'`). Used by pre_start hooks that build an AgentDirective.
+   */
+  resolved_model?: string
+  /**
+   * Feature C: the per-run data directory (`state.run_data_dir`). Subagents
+   * executing this phase read/write artifacts under this root. Omitted for
+   * pre-Feature-C runs that still use legacy top-level folders.
+   */
+  run_data_dir?: string
   input_artifacts: Array<{
     type: string
     path: string
@@ -44,6 +56,7 @@ export function generatePhaseBrief(
   runState: RunState,
   config: PipelineConfig,
   qualityGates: QualityGate[],
+  options: { resolvedModel?: string; runDataDir?: string } = {},
 ): PhaseBrief {
   const phaseDef = config.phases[phaseName]
   if (!phaseDef) {
@@ -82,12 +95,14 @@ export function generatePhaseBrief(
   }
 
   // Generate instruction
-  const instruction = buildInstruction(phaseName, phaseDef, inputArtifacts, expectedTypes, gate)
+  const instruction = buildInstruction(phaseName, phaseDef, inputArtifacts, expectedTypes, gate, options)
 
   return {
     phase_name: phaseName,
     description: phaseDef.description,
     ...(phaseDef.model_tier ? { model_tier: phaseDef.model_tier } : {}),
+    ...(options.resolvedModel ? { resolved_model: options.resolvedModel } : {}),
+    ...(options.runDataDir ? { run_data_dir: options.runDataDir } : {}),
     input_artifacts: inputArtifacts,
     output_requirements: {
       expected_types: expectedTypes,
@@ -174,11 +189,22 @@ function buildInstruction(
   inputArtifacts: Array<{ type: string; path: string }>,
   expectedTypes: string[],
   gate?: QualityGate,
+  options: { resolvedModel?: string; runDataDir?: string } = {},
 ): string {
   const lines: string[] = [
     `Execute phase "${phaseName}": ${phaseDef.description}`,
     '',
   ]
+
+  if (options.resolvedModel) {
+    lines.push(`Model: ${options.resolvedModel}`)
+  }
+  if (options.runDataDir) {
+    lines.push(`Run data directory: ${options.runDataDir}`)
+  }
+  if (options.resolvedModel || options.runDataDir) {
+    lines.push('')
+  }
 
   if (inputArtifacts.length > 0) {
     lines.push('Input artifacts:')
