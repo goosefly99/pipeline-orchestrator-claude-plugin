@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { handleCCGetItems, handleCCSaveOverview } from '../cc-handlers.ts'
 import type { CCContext } from '../cc-handlers.ts'
 import type { ResearchItem, KnowledgeOverview } from '../cc-types.ts'
+import { collectConcepts } from '../concepts.ts'
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -206,6 +207,61 @@ describe('handleCCSaveOverview', () => {
     assert.throws(
       () => handleCCSaveOverview({}, ctx),
       /overview is required/,
+    )
+  })
+})
+
+// ── collectConcepts — theme template correctness ───────────────
+
+describe('collectConcepts — theme template and prompt', () => {
+  function makeResearchItem(id: string, content: string): ResearchItem {
+    return { id, title: `Item ${id}`, content, tags: [], metadata: {} }
+  }
+
+  it('synthesis_prompt contains "concept_names" in theme instructions', () => {
+    const sourceGroups = [
+      { collection: 'test-collection', items: [makeResearchItem('r1', 'Some research content')] },
+    ]
+    const { synthesis_prompt } = collectConcepts(sourceGroups, { title: 'Test Overview' })
+    assert.ok(
+      synthesis_prompt.includes('concept_names'),
+      'synthesis_prompt must mention "concept_names" in theme instructions',
+    )
+  })
+
+  it('synthesis_prompt theme instructions do not use "concepts" as the theme field name', () => {
+    const sourceGroups = [
+      { collection: 'test-collection', items: [makeResearchItem('r1', 'Some research content')] },
+    ]
+    const { synthesis_prompt } = collectConcepts(sourceGroups, { title: 'Test Overview' })
+
+    const themesBlockMatch = synthesis_prompt.match(/For themes:[\s\S]*?(?=\n\n|\n##|$)/)
+    assert.ok(themesBlockMatch, 'synthesis_prompt must contain a "For themes:" block')
+    const themesBlock = themesBlockMatch![0]
+
+    assert.ok(
+      !themesBlock.match(/["']concepts["']\s*:/),
+      'theme instructions must not reference "concepts": as a JSON key',
+    )
+  })
+
+  it('template.themes[0] has concept_names key and not concepts key', () => {
+    const sourceGroups = [
+      { collection: 'test-collection', items: [makeResearchItem('r1', 'Some research content')] },
+    ]
+    const { template } = collectConcepts(sourceGroups, { title: 'Test Overview' })
+
+    assert.ok(Array.isArray(template.themes), 'template.themes must be an array')
+    assert.ok(template.themes.length > 0, 'template.themes must contain at least one placeholder')
+
+    const placeholder = template.themes[0] as unknown as Record<string, unknown>
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(placeholder, 'concept_names'),
+      'template.themes[0] must have "concept_names" key',
+    )
+    assert.ok(
+      !Object.prototype.hasOwnProperty.call(placeholder, 'concepts'),
+      'template.themes[0] must NOT have old "concepts" key',
     )
   })
 })

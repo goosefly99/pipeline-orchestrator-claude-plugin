@@ -163,7 +163,9 @@ export function collectConcepts(
     sources,
     summary: '',
     concepts: [],
-    themes: [],
+    themes: [
+      { name: '', description: '', concept_names: [] as string[] },
+    ],
     key_findings: [],
     knowledge_gaps: [],
     open_questions: [],
@@ -216,7 +218,7 @@ For each concept extracted:
 
 For themes:
 - Group related concepts under broader themes
-- Each theme should have a clear description of what unifies its concepts
+- Each theme MUST have exactly three fields: "name" (string), "description" (what unifies the concepts), and "concept_names" (array of concept name strings — NOT "concepts")
 
 ${crossRef}
 
