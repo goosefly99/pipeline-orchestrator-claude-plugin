@@ -7,6 +7,34 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 
+const MAX_SANITIZED_SESSION_ID_LEN = 128
+
+/**
+ * Sanitize a session_id string for safe use as a filename component.
+ * Any character outside [A-Za-z0-9_-] is considered unsafe. The sanitizer
+ * fails closed (caller should deny) if:
+ *   - the input is not a string,
+ *   - the input contains any char outside [A-Za-z0-9_-] (path traversal,
+ *     null bytes, separators, etc.),
+ *   - the (sanitized) result is empty — we never want to write to
+ *     `session-.json`,
+ *   - the result exceeds MAX_SANITIZED_SESSION_ID_LEN characters.
+ * On success, the returned `sanitized` value is identical to the input
+ * (since any unsafe character would have already triggered a failure).
+ */
+function sanitizeSessionId(raw) {
+  if (typeof raw !== 'string') return { ok: false, reason: 'session_id is not a string' }
+  const sanitized = raw.replace(/[^a-zA-Z0-9_-]/g, '_')
+  if (sanitized.length === 0) return { ok: false, reason: 'session_id is empty after sanitization' }
+  if (sanitized.length > MAX_SANITIZED_SESSION_ID_LEN) {
+    return { ok: false, reason: `session_id exceeds ${MAX_SANITIZED_SESSION_ID_LEN} characters after sanitization` }
+  }
+  if (sanitized !== raw) {
+    return { ok: false, reason: 'session_id contains disallowed characters (only [A-Za-z0-9_-] permitted)' }
+  }
+  return { ok: true, sanitized }
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const CONFIG_PATH = join(__dirname, '..', 'runtime-config.json')
 
@@ -25,9 +53,22 @@ try {
   const warnOnly = guardConfig.warn_only !== false
 
   const hookInput = JSON.parse(input || '{}')
-  const sessionId = hookInput.session_id || 'unknown'
+  const rawSessionId = hookInput.session_id || 'unknown'
   const toolInput = hookInput.tool_input || {}
   const phaseName = toolInput.phase || toolInput.phase_name || 'unknown'
+
+  // Fail-closed on any session_id that can't be safely used as a file
+  // component. This guards against path traversal (../../etc/passwd), null
+  // bytes, absolute paths, and unbounded-length inputs.
+  const san = sanitizeSessionId(rawSessionId)
+  if (!san.ok) {
+    process.stdout.write(JSON.stringify({
+      permissionDecision: 'deny',
+      deny_reason: `phase-start-guard refused unsafe session_id: ${san.reason}`,
+    }))
+    process.exit(0)
+  }
+  const sessionId = san.sanitized
 
   // Track phases per session in TMPDIR
   const trackDir = join(tmpdir(), 'pipeline-hooks-sessions')

@@ -252,6 +252,45 @@ test('denies on repeat phase start when warn_only is false', () => {
   cleanupConfig()
 })
 
+test('denies path-traversal session_id', () => {
+  setupConfig()
+  const result = runHook('phase-start-guard.mjs', {
+    event: 'PreToolUse',
+    tool_name: 'mcp__pipeline__pipeline_start_phase',
+    tool_input: { phase: 'traversal_test' },
+    session_id: '../../../etc/passwd',
+  })
+  assertEqual(result.parsed.permissionDecision, 'deny', 'Permission decision')
+  assertIncludes(result.parsed.deny_reason, 'unsafe session_id', 'Deny reason')
+  cleanupConfig()
+})
+
+test('denies session_id longer than 128 chars after sanitization', () => {
+  setupConfig()
+  const longId = 'a'.repeat(200)
+  const result = runHook('phase-start-guard.mjs', {
+    event: 'PreToolUse',
+    tool_name: 'mcp__pipeline__pipeline_start_phase',
+    tool_input: { phase: 'long_test' },
+    session_id: longId,
+  })
+  assertEqual(result.parsed.permissionDecision, 'deny', 'Permission decision')
+  assertIncludes(result.parsed.deny_reason, 'exceeds', 'Deny reason')
+  cleanupConfig()
+})
+
+test('allows safe alphanumeric session_id', () => {
+  setupConfig()
+  const result = runHook('phase-start-guard.mjs', {
+    event: 'PreToolUse',
+    tool_name: 'mcp__pipeline__pipeline_start_phase',
+    tool_input: { phase: `safe_unique_${Date.now()}` },
+    session_id: `safe-session-${Date.now()}`,
+  })
+  assertEqual(result.parsed.permissionDecision, 'allow', 'Permission decision')
+  cleanupConfig()
+})
+
 console.log('\n=== DAG Guard (dag-guard.mjs) ===\n')
 
 test('allows entry point phases with no required deps', () => {
