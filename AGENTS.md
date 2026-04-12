@@ -105,6 +105,52 @@ When extracting additional handlers, follow this same pattern. Keep handler modu
 
 **See also:** `tests/quality-gates-config.test.ts`, `pipeline/schemas/`, `quality-gates.ts` line 211.
 
+### Phase Execution via Subagent
+
+**Contract:** When `pipeline_start_phase` returns a response JSON object that
+contains an `agent_directive` field, the MCP client (Claude Code) MUST spawn
+an Agent subagent using exactly those parameters and MUST NOT execute the
+phase inline in the parent session. The `agent_directive` shape is:
+
+```json
+{
+  "subagent_type": "general-purpose",
+  "model": "<precedence-resolved Claude model ID>",
+  "description": "<short tag for the Agent tool call>",
+  "prompt": "<self-contained brief + completion instructions>",
+  "isolation": "worktree"
+}
+```
+
+The `isolation` field is optional — omit unless the phase mutates the
+repository.
+
+**Model precedence:** `handleStartPhase` in `lifecycle-handlers.ts` resolves
+the model via:
+
+1. `PhaseDefinition.model` from `pipeline/pipeline.toml` (phase-specific)
+2. `run_parameters.phase_model` from a `pre_pipeline_init` hook (run default)
+3. Hard-coded `claude-sonnet-4-6` (fallback)
+
+The resolved model is echoed back on the response as `resolved_model` even
+when no hook registers an `agent_directive`, so clients can log and audit
+the choice.
+
+**Control flow:** The parent session does NOT wait synchronously for the
+subagent. The subagent calls `pipeline_complete_phase` (or `pipeline_fail_phase`)
+on finish. Subsequent `pipeline_next_phases` calls in the parent observe the
+state written by the subagent — the MCP server's `loadRunState` / auto-reload
+path handles the disk-sync cross-session.
+
+**Opting in:** Uncomment the `[[hooks]] trigger = "pre_start"` block at the
+bottom of `pipeline/pipeline.toml` and verify `hooks/pre-phase-start.example.js`
+exists and is executable. Customize the example script to change the subagent
+type, prompt template, or `isolation` flag.
+
+**See also:** `hooks/pre-phase-start.example.js`, `lifecycle-handlers.ts`
+(`handleStartPhase`), `hooks.ts` (`parseAgentDirective`), `types.ts`
+(`AgentDirective`), `tests/pre-start-agent-directive.test.ts`.
+
 ## Per-Run Artifact Directories
 
 **Layout:** New runs persist all artifacts under a per-run tree rooted at

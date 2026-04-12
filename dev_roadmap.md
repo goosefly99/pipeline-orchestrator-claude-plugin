@@ -20,9 +20,9 @@
 |-----------|-------|-------|:-----------:|:-----------:|:--------:|:-------:|
 | M0 — Part 1 & Part 2 & Feature A | Quality-gates fix + 7 post-meta-run fixes + pre-init hook | 10 | 0 | 0 | 10 | 0 |
 | M1 — Feature C | Per-run hierarchical artifact directories | 10 | 0 | 0 | 10 | 0 |
-| M2 — Feature B | Pre-phase-start hook with Agent-per-phase execution | 10 | 6 | 0 | 4 | 0 |
+| M2 — Feature B | Pre-phase-start hook with Agent-per-phase execution | 10 | 5 | 0 | 5 | 0 |
 | M3 — Part 6 | Hooks code-review fixes (harness runtime) | 12 | 12 | 0 | 0 | 0 |
-| **Total** | | **42** | **18** | **0** | **24** | **0** |
+| **Total** | | **42** | **17** | **0** | **25** | **0** |
 
 **Current work focus:** M1 → M2 → M3 (M3 can execute in parallel with M1/M2 since it
 targets `hooks/scripts/` rather than the TypeScript MCP server).
@@ -165,7 +165,7 @@ written by the subagent.
 | B6 | Update `generatePhaseBrief` signature to accept resolved `model` and `run_data_dir`. Include both in the rendered brief text so the spawned subagent sees its model identity and the run's data root. | `phase-brief.ts` | M1-C2 | Complete |
 | B7 | Create example hook `hooks/pre-phase-start.example.js`: reads `PIPELINE_HOOK_CONTEXT`, computes resolved model, emits `{ agent_directive: { subagent_type: "general-purpose", model, description: "<phase> execution", prompt: <brief + completion instruction + no-context-inheritance rule> } }` to stdout. | `hooks/pre-phase-start.example.js` (new) | B5 | Complete |
 | B8 | Register the example hook (disabled-by-default, commented out) under `[[hooks]]` in `pipeline/pipeline.toml` with `trigger = "pre_start"`, `phase_filter = "*"`. Users opt in by uncommenting. | `pipeline/pipeline.toml` | B7 | Complete |
-| B9 | Add `### Phase Execution via Subagent` subsection under the `## Quality Gates` block in `AGENTS.md` documenting the client-side contract (spawn Agent on `agent_directive`, no sync wait, subagent owns `complete_phase`). | `AGENTS.md` | B5 | Not Started |
+| B9 | Add `### Phase Execution via Subagent` subsection under the `## Quality Gates` block in `AGENTS.md` documenting the client-side contract (spawn Agent on `agent_directive`, no sync wait, subagent owns `complete_phase`). | `AGENTS.md` | B5 | Complete |
 | B10 | New test `tests/pre-start-agent-directive.test.ts`: (a) unit — hook returns expected directive per phase with precedence-resolved model, (b) handler — `handleStartPhase` includes `agent_directive` when hook returns one and omits it otherwise, (c) integration — mock 9-phase run asserts each `start_phase` returns the expected model. | `tests/pre-start-agent-directive.test.ts` (new) | B1–B9 | Not Started |
 
 ### Verification (M2)
