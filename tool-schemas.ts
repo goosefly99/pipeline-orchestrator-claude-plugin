@@ -167,7 +167,7 @@ export const toolSchemas: ToolSchema[] = [
       properties: {
         storage_key: {
           type: 'string',
-          description: 'Storage path key (e.g., "raw_collections", "specs", "overviews", "debates")',
+          description: 'Storage path key (e.g., "raw_collections", "specs", "overviews", "debates"). Canonical storage keys by artifact type: `design-spec` → `"specs"`, `validation-report` → `"reports"`, `knowledge-overview` → `"overviews"`, `debate-transcript` → `"debates"`, `curated-collection` → `"curated-collections"`, `raw-collection` → `"raw-collections"`, `research-manifest` → `"manifests"`, `codebase-requirements` → `"codebase"`, `scaffold-document` → `"scaffold"`. Storing an artifact type under the wrong key can mask other artifacts.',
         },
         file_name: { type: 'string', description: 'Filename for the artifact' },
         artifact: { type: 'object', description: 'The artifact JSON to store (omit if using file_path)' },
