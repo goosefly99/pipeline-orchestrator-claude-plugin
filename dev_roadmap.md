@@ -27,6 +27,34 @@
 **Current work focus:** M1 → M2 → M3 (M3 can execute in parallel with M1/M2 since it
 targets `hooks/scripts/` rather than the TypeScript MCP server).
 
+### Audit Confirmation (2026-04-11)
+
+Full codebase review against this roadmap confirmed all status claims in the table
+above are **accurate**. No silent drift detected. Current test health on `auto_dev`:
+
+| Check | Result |
+|-------|--------|
+| `npm run typecheck` | clean (0 errors) |
+| `node --test tests/*.test.ts` | **787/787** passing (174 suites, 1232ms) |
+| `node hooks/tests/run-tests.mjs` | **30/30** passing |
+
+Verified-complete items spot-checked with file/line evidence:
+
+- **M1 C1** → `storage.ts:50-110` (helpers, `ArtifactSubtype` union at 23-29)
+- **M1 C2** → `run-state.ts:51-101` (initRun computes `run_data_dir`), `types.ts:87`
+- **M1 C8** → `run-state.ts:37-49` (`resolveRunWriteDir`)
+- **M1 C9** → `tests/per-run-paths.test.ts` (collision + legacy-fallback coverage)
+- **M1 C10** → `AGENTS.md:108-163` (`## Per-Run Artifact Directories` section)
+- **M2 B1** → `types.ts:219-234` (`AgentDirective`), `types.ts:36` (`Phase.model`)
+- **M2 B2** → `hooks.ts:39-56` (`HookResult.agent_directive`), `hooks.ts:73-106` (`parseAgentDirective`)
+- **M2 B3** → `toml-loader.ts:31` (`model: raw.model as string | undefined`)
+- **M2 B4** → `pipeline/pipeline.toml:16-32` (precedence comment block), per-phase `model` on all 9 phases
+
+Verified-absent items confirmed by file absence or grep:
+
+- **M2 B5-B10** → `handleStartPhase` ignores hook-return value, no `agent_directive` in response; `generatePhaseBrief` signature unchanged; no `hooks/pre-phase-start.example.js`; no `[[hooks]]` block in `pipeline/pipeline.toml`; no `### Phase Execution via Subagent` in `AGENTS.md`; no `tests/pre-start-agent-directive.test.ts`.
+- **M3 6.1-6.12** → all 12 items still not started. See **M3 Audit Evidence (2026-04-11)** below for precise line references discovered during the audit — copy these into the first implementation commit for each item.
+
 ---
 
 ## Dependency Graph
@@ -179,6 +207,34 @@ commit; do not re-apply landed fixes.
 | 6.10 | TESTING | Add three missing negative test cases: (a) DAG guard denies unsatisfied dependency, (b) artifact gate denies when no artifacts exist, (c) token budget guard handles string/NaN `input_tokens`. Add supporting fixtures under `hooks/tests/fixtures/`. | `hooks/tests/run-tests.mjs`, `hooks/tests/fixtures/` | 6.1, 6.4 | Not Started |
 | 6.11 | HARDENING | Add 10 MB stdin size cap in `readStdin()`. On cap exceeded: emit `{ permissionDecision: 'allow' }` and `process.exit(0)` (fail-open), write warning to stderr. Unit test with 15 MB input. | `hooks/lib/common.mjs` | 6.8 | Not Started |
 | 6.12 | CLEANUP | Session tracking file TTL cleanup. Before writing the current session's file, scan `$TMPDIR/pipeline-hooks-sessions/` and remove files with `mtime < Date.now() - 24h`. Ignore unlink errors. Cap cleanup work at 100 files per invocation. Unit test seeding 3 files (2 stale, 1 fresh). | `hooks/scripts/phase-start-guard.mjs` | 6.2 | Not Started |
+
+### M3 Audit Evidence (2026-04-11)
+
+Confirmed line numbers on `auto_dev` at audit time. Use these as the first anchor for
+each fix commit — re-read the target file before editing and update anchors if prior
+fixes in the same file have shifted lines.
+
+| ID | Target | Current-state evidence (line numbers verified) |
+|----|--------|-------------------------------------------------|
+| 6.1 | `hooks/scripts/dag-guard.mjs:93-96` | `every(dep => phase.status !== 'completed')` — **rejects `skipped` deps.** Canonical is `dag.ts:59` (`completed.has(...) \|\| skipped.has(...)`). |
+| 6.1 | `hooks/scripts/post-phase-complete.mjs:70-73` | Same bug: `every(dep => depState?.status === 'completed')` only accepts `'completed'`, skips `'skipped'`. Both hook files diverge from canonical `dag.ts:59` in the same way. |
+| 6.2 | `hooks/scripts/phase-start-guard.mjs:28, 36` | `const sessionId = hookInput.session_id \|\| 'unknown'` (unsanitized); used directly in `` join(trackDir, `session-${sessionId}.json`) `` — enables `../` path traversal. |
+| 6.3 | `hooks/generate-settings.mjs:58` | `` command: `node ${join(scriptsDir, scriptFile).replace(/\\/g, '/')}` `` — **unquoted**. Paths with spaces break hook invocation silently. |
+| 6.4 | `hooks/scripts/token-budget-guard.mjs:40-43, ~96` | Token counts read directly from `usage.{input,output,cache_creation_input,cache_read_input}_tokens` with no `Number()`/`isFinite()` guard; `totalCost` not checked for finiteness. |
+| 6.5 | `hooks/scripts/post-phase-complete.mjs:98-109` | `appendFileSync(eventsPath, JSON.stringify(event) + '\n', ...)` still writes `phase_completed` — **duplicate of TS-layer Fix 3.2**. Lines 114-126 `systemMessage` emission must be preserved when this block is deleted. |
+| 6.6 | `hooks/scripts/session-init.mjs` | `nextPhases` line lists all `status === 'pending'` phases without DAG dep check. Option B: drop the "Next available" line. |
+| 6.7 | `hooks/scripts/file-read-version-guard.mjs:66` | `normalizedPath = filePath.toLowerCase().replace(/\\/g, '/')` — only case+slash normalization. No `path.normalize()`, no `..` rejection. |
+| 6.8 | `hooks/lib/` | **Directory does not exist.** All 11 scripts reimplement `for await (const chunk of process.stdin)` stdin reader. `findLatestRunState()` is duplicated in `dag-guard.mjs:15-41`, `post-phase-complete.mjs:14-42`, `artifact-gate.mjs`, `stop-guard.mjs`. Config-load try/catch duplicated in ~10 scripts. |
+| 6.9 | `hooks/scripts/dag-guard.mjs:11` | `const CONFIG_PATH = join(__dirname, '..', 'runtime-config.json')` — **declared but never referenced** in the file. Trivial one-line delete (but easier post-6.8). |
+| 6.10 | `hooks/tests/run-tests.mjs` | No negative test for: (a) DAG guard deny on unsatisfied dep, (b) artifact gate deny on empty artifacts, (c) token budget string/NaN coercion. Fixture directory `hooks/tests/fixtures/` exists but needs three additions. |
+| 6.11 | `hooks/lib/common.mjs` | Not yet created (see 6.8). When authored, `readStdin()` must cap at 10 MB and fail-open (`{permissionDecision: 'allow'}`, exit 0) on overflow. |
+| 6.12 | `hooks/scripts/phase-start-guard.mjs:33-44` | No TTL cleanup of `$TMPDIR/pipeline-hooks-sessions/`. Files written indefinitely. Scope: remove mtime-age > 24h entries, cap 100 files per invocation, ignore unlink errors. |
+
+**Behavioural note on 6.1:** The bug is worse than "divergence" — both hook files
+rely only on `'completed'`, so **any pipeline run that uses skipped phases will be
+mis-gated on the PreToolUse path** and will also fail to surface downstream phases
+as `next` in post-complete. Prefer landing 6.1 early; it's the correctness foundation
+for both the DAG guard and the post-complete systemMessage.
 
 ### Recommended intra-M3 ordering
 
