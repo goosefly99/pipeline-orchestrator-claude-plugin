@@ -16,6 +16,7 @@ import type {
   HookTrigger,
   HandlerResponse,
   PipelineRunParameters,
+  AgentDirective,
 } from './types.ts'
 import { PipelineError } from './types.ts'
 import type { InputSatisfaction } from './dag.ts'
@@ -378,20 +379,6 @@ export function handleStartPhase(args: Record<string, unknown>, ctx: LifecycleCo
   const phaseName = args.phase as string
   if (!phaseName) throw new Error('phase is required')
 
-  // Run pre_start hooks (blocking: failure throws PipelineError)
-  const projectRoot = ctx.getProjectRoot()
-  const hooks = ctx.getHooksConfig()
-  if (projectRoot && hooks.length > 0) {
-    const hookContext: HookContext = {
-      run_id: state.run_id,
-      phase: phaseName,
-      trigger: 'pre_start',
-      project_root: projectRoot,
-      run_dir: ctx.getActiveRunDir(),
-    }
-    ctx.runHooks(hooks, 'pre_start', hookContext, projectRoot)
-  }
-
   const config = ctx.getConfig()
   const activeRunDir = ctx.getActiveRunDir()
 
@@ -403,6 +390,58 @@ export function handleStartPhase(args: Record<string, unknown>, ctx: LifecycleCo
   const phaseStateSlot = state.phases[phaseName]
   if (phaseStateSlot) {
     phaseStateSlot.input_artifacts = inputArtifacts
+  }
+
+  // Feature B: resolve the concrete Claude model ID via precedence chain:
+  //   1. Phase-specific `model` in pipeline.toml                    (highest)
+  //   2. run_parameters.phase_model set by pre_pipeline_init hook   (run default)
+  //   3. Hard-coded 'claude-sonnet-4-6'                             (fallback)
+  const phaseDef = config.phases[phaseName]
+  const phaseModelParam = state.run_parameters?.phase_model
+  const resolvedModel: string =
+    (typeof phaseDef?.model === 'string' && phaseDef.model.length > 0
+      ? phaseDef.model
+      : undefined) ??
+    (typeof phaseModelParam === 'string' && phaseModelParam.length > 0
+      ? phaseModelParam
+      : undefined) ??
+    'claude-sonnet-4-6'
+  const runDataDir = state.run_data_dir ?? activeRunDir
+
+  // Generate the phase brief so the pre_start hook can embed it in the
+  // subagent's prompt. Uses the new options arg landed in B6.
+  const phaseBrief = generatePhaseBrief(
+    phaseName,
+    state,
+    config,
+    ctx.getQualityGates(),
+    { resolvedModel, runDataDir },
+  )
+
+  // Run pre_start hooks (blocking: failure throws PipelineError). Collect the
+  // first agent_directive from any matching hook; hooks beyond the first with
+  // a directive are ignored but still executed for their side effects.
+  let agentDirective: AgentDirective | undefined
+  const projectRoot = ctx.getProjectRoot()
+  const hooks = ctx.getHooksConfig()
+  if (projectRoot && hooks.length > 0) {
+    const hookContext: HookContext = {
+      run_id: state.run_id,
+      phase: phaseName,
+      trigger: 'pre_start',
+      project_root: projectRoot,
+      run_dir: activeRunDir,
+      run_parameters: state.run_parameters ?? {},
+      phase_brief: phaseBrief,
+      resolved_model: resolvedModel,
+    }
+    const hookResults = ctx.runHooks(hooks, 'pre_start', hookContext, projectRoot)
+    for (const hr of hookResults) {
+      if (hr.agent_directive) {
+        agentDirective = hr.agent_directive
+        break
+      }
+    }
   }
 
   const updated = ctx.startPhase(state, phaseName, activeRunDir)
@@ -418,18 +457,22 @@ export function handleStartPhase(args: Record<string, unknown>, ctx: LifecycleCo
 
   const phase = config.phases[phaseName]
 
-  return {
-    json: JSON.stringify({
-      phase: phaseName,
-      status: 'in_progress',
-      description: phase.description,
-      inputs: phase.inputs,
-      input_mode: phase.input_mode,
-      outputs: phase.outputs,
-      tools: phase.tools,
-      input_artifacts: inputArtifacts,
-    }, null, 2),
+  const responseBody: Record<string, unknown> = {
+    phase: phaseName,
+    status: 'in_progress',
+    description: phase.description,
+    inputs: phase.inputs,
+    input_mode: phase.input_mode,
+    outputs: phase.outputs,
+    tools: phase.tools,
+    input_artifacts: inputArtifacts,
+    resolved_model: resolvedModel,
   }
+  if (agentDirective) {
+    responseBody.agent_directive = agentDirective
+  }
+
+  return { json: JSON.stringify(responseBody, null, 2) }
 }
 
 export function handleCompletePhase(args: Record<string, unknown>, ctx: LifecycleContext): HandlerResponse {
