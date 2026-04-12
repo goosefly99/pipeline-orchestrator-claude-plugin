@@ -447,12 +447,13 @@ export function handleStartPhase(args: Record<string, unknown>, ctx: LifecycleCo
   const updated = ctx.startPhase(state, phaseName, activeRunDir)
   ctx.setActiveRun(updated)
 
-  // Log phase_started event
+  // Log phase_started event (resolved_model included for cost profiling — M5.2)
   appendEvent(activeRunDir, {
     timestamp: new Date().toISOString(),
     event: 'phase_started',
     phase: phaseName,
     run_id: updated.run_id,
+    resolved_model: resolvedModel,
   })
 
   const phase = config.phases[phaseName]
@@ -770,6 +771,19 @@ export function handleRunStatus(ctx: LifecycleContext): HandlerResponse {
     artifacts: state.available_artifacts,
     recommended_action,
   }
+  // Expose resolved_model for the current in-progress phase (cost auditing)
+  const inProgressPhase = Object.entries(state.phases).find(([, p]) => p.status === 'in_progress')
+  if (inProgressPhase) {
+    const [inProgressName] = inProgressPhase
+    const phaseDef = config.phases[inProgressName]
+    const phaseModelParam = state.run_parameters?.phase_model
+    const currentResolvedModel: string =
+      (typeof phaseDef?.model === 'string' && phaseDef.model.length > 0 ? phaseDef.model : undefined) ??
+      (typeof phaseModelParam === 'string' && phaseModelParam.length > 0 ? phaseModelParam : undefined) ??
+      'claude-sonnet-4-6'
+    result.current_phase_resolved_model = currentResolvedModel
+  }
+
   if (warnings.length > 0) result.warnings = warnings
   if (staleNote) result.state_reloaded = staleNote
 

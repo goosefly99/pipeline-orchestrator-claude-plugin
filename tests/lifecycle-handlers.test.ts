@@ -8,6 +8,7 @@ import {
   handleRetryPhase,
   handleInitRun,
   handleStartPhase,
+  handleRunStatus,
   type LifecycleContext,
 } from '../lifecycle-handlers.ts'
 import {
@@ -35,11 +36,12 @@ afterEach(() => {
 
 // ── Minimal config factory ────────────────────────────────────
 
-function makeConfig(optionalPhases: string[] = []): PipelineConfig {
+function makeConfig(optionalPhases: string[] = [], phaseModel?: string): PipelineConfig {
   const phases: Record<string, PhaseDefinition> = {
     discovery: {
       id: 0, description: '', inputs: [], outputs: [], tools: [],
       entry_point: true, optional: false,
+      model: phaseModel,
     },
     curation: {
       id: 1, description: '', inputs: [], outputs: [], tools: [],
@@ -67,6 +69,7 @@ function makeCtx(
   initialState: RunState,
   stateDir: string,
   optionalPhases: string[] = [],
+  config?: PipelineConfig,
 ): LifecycleContext {
   let activeRun: RunState | null = initialState
   let activeRunDir = stateDir
@@ -76,13 +79,17 @@ function makeCtx(
     setActiveRun: (s) => { activeRun = s },
     getActiveRunDir: () => activeRunDir,
     setActiveRunDir: (dir) => { activeRunDir = dir },
-    getConfig: () => makeConfig(optionalPhases),
+    getConfig: () => config ?? makeConfig(optionalPhases),
     setProjectRoot: () => {},
     getStorageConfig: (): StorageConfig => ({ base_dir: stateDir, paths: {} }),
     initRun: () => initialState,
     skipPhase: (s) => s,
     addArtifact: (s) => s,
-    startPhase: (s) => s,
+    startPhase: (s, phase, dir) => {
+      const updated = startPhase(s, phase, dir)
+      activeRun = updated
+      return updated
+    },
     completePhase: (s) => s,
     failPhase: (s, phase, error, dir) => {
       const updated = failPhaseState(s, phase, error, dir)
@@ -605,5 +612,148 @@ describe('Feature C step C8 — active run dir redirect', () => {
     assert.equal(parsedEvent.event, 'phase_started', 'first event must be phase_started')
     assert.equal(parsedEvent.phase, 'discovery', 'event phase must match the started phase')
     assert.equal(parsedEvent.run_id, runId, 'event run_id must match')
+  })
+})
+
+// ── handleStartPhase — resolved_model in phase_started event ──
+
+describe('handleStartPhase — resolved_model (M5.2)', () => {
+  it('phase_started event contains resolved_model defaulting to claude-sonnet-4-6', () => {
+    const state = initRun('m52-default', '1.0.0', ['discovery'], tempDir)
+    const ctx = makeCtx(state, tempDir)
+
+    handleStartPhase({ phase: 'discovery' }, ctx)
+
+    const eventsPath = join(tempDir, 'events.jsonl')
+    const lines = readFileSync(eventsPath, 'utf-8').trim().split('\n')
+    const phaseStartedEvent = lines
+      .map(l => JSON.parse(l) as Record<string, unknown>)
+      .find(e => e.event === 'phase_started')
+
+    assert.ok(phaseStartedEvent, 'phase_started event must exist in events.jsonl')
+    assert.equal(
+      phaseStartedEvent.resolved_model,
+      'claude-sonnet-4-6',
+      'resolved_model must default to claude-sonnet-4-6',
+    )
+  })
+
+  it('phase_started event uses run_parameters.phase_model when no phase-level model', () => {
+    let state = initRun('m52-run-param', '1.0.0', ['discovery'], tempDir)
+    state = { ...state, run_parameters: { phase_model: 'claude-haiku-4-5' } }
+    const ctx = makeCtx(state, tempDir)
+
+    handleStartPhase({ phase: 'discovery' }, ctx)
+
+    const eventsPath = join(tempDir, 'events.jsonl')
+    const lines = readFileSync(eventsPath, 'utf-8').trim().split('\n')
+    const phaseStartedEvent = lines
+      .map(l => JSON.parse(l) as Record<string, unknown>)
+      .find(e => e.event === 'phase_started')
+
+    assert.ok(phaseStartedEvent, 'phase_started event must exist')
+    assert.equal(
+      phaseStartedEvent.resolved_model,
+      'claude-haiku-4-5',
+      'resolved_model must match run_parameters.phase_model',
+    )
+  })
+
+  it('phase_started event uses phase-level model over run_parameters.phase_model', () => {
+    let state = initRun('m52-phase-model', '1.0.0', ['discovery'], tempDir)
+    state = { ...state, run_parameters: { phase_model: 'claude-haiku-4-5' } }
+    const config = makeConfig([], 'claude-opus-4-5')
+    const ctx = makeCtx(state, tempDir, [], config)
+
+    handleStartPhase({ phase: 'discovery' }, ctx)
+
+    const eventsPath = join(tempDir, 'events.jsonl')
+    const lines = readFileSync(eventsPath, 'utf-8').trim().split('\n')
+    const phaseStartedEvent = lines
+      .map(l => JSON.parse(l) as Record<string, unknown>)
+      .find(e => e.event === 'phase_started')
+
+    assert.ok(phaseStartedEvent, 'phase_started event must exist')
+    assert.equal(
+      phaseStartedEvent.resolved_model,
+      'claude-opus-4-5',
+      'phase-level model must take precedence over run_parameters.phase_model',
+    )
+  })
+
+  it('handleStartPhase response body includes resolved_model', () => {
+    const state = initRun('m52-response', '1.0.0', ['discovery'], tempDir)
+    const ctx = makeCtx(state, tempDir)
+
+    const result = handleStartPhase({ phase: 'discovery' }, ctx)
+    const body = JSON.parse(result.json) as Record<string, unknown>
+
+    assert.equal(body.resolved_model, 'claude-sonnet-4-6')
+  })
+})
+
+// ── handleRunStatus — current_phase_resolved_model (M5.3) ────
+
+describe('handleRunStatus — current_phase_resolved_model (M5.3)', () => {
+  it('no current_phase_resolved_model when no phase is in_progress', () => {
+    const state = initRun('m53-no-phase', '1.0.0', ['discovery'], tempDir)
+    const ctx = makeCtx(state, tempDir)
+
+    const result = handleRunStatus(ctx)
+    const body = JSON.parse(result.json) as Record<string, unknown>
+
+    assert.equal(
+      body.current_phase_resolved_model,
+      undefined,
+      'current_phase_resolved_model must be absent when no phase is in_progress',
+    )
+  })
+
+  it('current_phase_resolved_model defaults to claude-sonnet-4-6 when phase is in_progress', () => {
+    let state = initRun('m53-default', '1.0.0', ['discovery'], tempDir)
+    state = startPhase(state, 'discovery', tempDir)
+    const ctx = makeCtx(state, tempDir)
+
+    const result = handleRunStatus(ctx)
+    const body = JSON.parse(result.json) as Record<string, unknown>
+
+    assert.equal(
+      body.current_phase_resolved_model,
+      'claude-sonnet-4-6',
+      'current_phase_resolved_model must default to claude-sonnet-4-6',
+    )
+  })
+
+  it('current_phase_resolved_model uses run_parameters.phase_model when no phase-level model', () => {
+    let state = initRun('m53-run-param', '1.0.0', ['discovery'], tempDir)
+    state = startPhase(state, 'discovery', tempDir)
+    state = { ...state, run_parameters: { phase_model: 'claude-haiku-4-5' } }
+    const ctx = makeCtx(state, tempDir)
+
+    const result = handleRunStatus(ctx)
+    const body = JSON.parse(result.json) as Record<string, unknown>
+
+    assert.equal(
+      body.current_phase_resolved_model,
+      'claude-haiku-4-5',
+      'current_phase_resolved_model must match run_parameters.phase_model',
+    )
+  })
+
+  it('current_phase_resolved_model uses phase-level model over run_parameters.phase_model', () => {
+    let state = initRun('m53-phase-model', '1.0.0', ['discovery'], tempDir)
+    state = startPhase(state, 'discovery', tempDir)
+    state = { ...state, run_parameters: { phase_model: 'claude-haiku-4-5' } }
+    const config = makeConfig([], 'claude-opus-4-5')
+    const ctx = makeCtx(state, tempDir, [], config)
+
+    const result = handleRunStatus(ctx)
+    const body = JSON.parse(result.json) as Record<string, unknown>
+
+    assert.equal(
+      body.current_phase_resolved_model,
+      'claude-opus-4-5',
+      'phase-level model must take precedence in handleRunStatus',
+    )
   })
 })

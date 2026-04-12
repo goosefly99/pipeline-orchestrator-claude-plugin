@@ -247,6 +247,8 @@ export interface LifecycleEvent {
     | 'artifact_stored'
   phase: string
   run_id: string
+  /** Present only on phase_started events: the Claude model ID used for this phase. */
+  resolved_model?: string
   details?: Record<string, unknown>
 }
 
