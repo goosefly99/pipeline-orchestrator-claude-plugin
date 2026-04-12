@@ -2,7 +2,7 @@
 // post-phase-complete.mjs — PostToolUse hook for pipeline_complete_phase
 // Appends completion event to events.jsonl, emits next available phases
 
-import { readFileSync, appendFileSync, readdirSync, existsSync } from 'node:fs'
+import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse } from 'smol-toml'
@@ -94,20 +94,7 @@ try {
   const toolInput = hookInput.tool_input || {}
   const phaseName = toolInput.phase || toolInput.phase_name || 'unknown'
 
-  const { state: runState, dir: runDir } = findLatestRunState() || {}
-
-  // Append completion event to events.jsonl
-  if (runDir) {
-    const event = {
-      timestamp: new Date().toISOString(),
-      event: 'phase_completed',
-      phase: phaseName,
-      run_id: runState?.run_id || 'unknown',
-      details: { source: 'post-phase-complete-hook' },
-    }
-    const eventsPath = join(runDir, 'events.jsonl')
-    appendFileSync(eventsPath, JSON.stringify(event) + '\n', 'utf-8')
-  }
+  const { state: runState } = findLatestRunState() || {}
 
   // Find next available phases
   const nextPhases = getNextPhases(runState)

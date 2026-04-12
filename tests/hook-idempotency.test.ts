@@ -254,3 +254,42 @@ describe('appendPhaseCompletedEvent', () => {
     )
   })
 })
+
+// ── Test case 4: TS + JS double-write regression (Fix 6.5) ────────────
+//
+// After Fix 3.2 (TS-layer idempotent wrapper) and Fix 6.5 (JS-layer
+// duplicate write deleted), calling both appendPhaseCompletedEvent (TS)
+// and running post-phase-complete.mjs against the same events.jsonl
+// should produce exactly ONE phase_completed entry for the phase.
+
+describe('TS+JS idempotency after Fix 6.5', () => {
+  it('post-phase-complete.mjs does not write a duplicate phase_completed', () => {
+    const state = makeRunState({ curation: 'completed' })
+    const runDir = tempDir
+
+    // Write one phase_completed via the TS wrapper
+    appendPhaseCompletedEvent(runDir, state, 'curation')
+    assert.equal(countPhaseCompletedEvents(runDir, 'curation'), 1)
+
+    // Executing the JS hook against a real pipeline_mcp_data/runs state
+    // would require full fixture plumbing; instead assert the expected
+    // static behavior: the post-phase-complete.mjs source must NOT
+    // contain an `appendFileSync(eventsPath, ...)` call, nor import
+    // or otherwise reference `appendFileSync` at all.
+    const postPath = join(process.cwd(), 'hooks', 'scripts', 'post-phase-complete.mjs')
+    const src = readFileSync(postPath, 'utf-8')
+    assert.equal(
+      src.includes('appendFileSync(eventsPath'),
+      false,
+      'post-phase-complete.mjs must not append directly to events.jsonl (Fix 6.5)',
+    )
+    assert.equal(
+      src.includes('appendFileSync'),
+      false,
+      'post-phase-complete.mjs should not import or call appendFileSync at all after 6.5',
+    )
+
+    // Count should remain 1 (the TS wrapper already wrote it)
+    assert.equal(countPhaseCompletedEvents(runDir, 'curation'), 1)
+  })
+})
