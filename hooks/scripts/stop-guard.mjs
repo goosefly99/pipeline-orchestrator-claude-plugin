@@ -2,45 +2,14 @@
 // stop-guard.mjs — Stop hook
 // Blocks stop when pipeline phases are in-progress
 
-import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { readStdin, findLatestRunState } from '../lib/common.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const RUNS_DIR = join(__dirname, '..', '..', 'pipeline_mcp_data', 'runs')
 
-function findLatestRunState() {
-  if (!existsSync(RUNS_DIR)) return null
-
-  const runDirs = readdirSync(RUNS_DIR, { withFileTypes: true })
-    .filter(d => d.isDirectory())
-    .map(d => d.name)
-
-  let latestRun = null
-  let latestTime = 0
-
-  for (const dir of runDirs) {
-    const statePath = join(RUNS_DIR, dir, 'run-state.json')
-    if (!existsSync(statePath)) continue
-    try {
-      const state = JSON.parse(readFileSync(statePath, 'utf-8'))
-      const updatedAt = new Date(state.updated_at).getTime()
-      if (updatedAt > latestTime) {
-        latestTime = updatedAt
-        latestRun = state
-      }
-    } catch {
-      continue
-    }
-  }
-
-  return latestRun
-}
-
-let input = ''
-for await (const chunk of process.stdin) {
-  input += chunk
-}
+const input = await readStdin()
 
 try {
   const hookInput = JSON.parse(input || '{}')
@@ -50,7 +19,7 @@ try {
     process.exit(0)
   }
 
-  const runState = findLatestRunState()
+  const runState = findLatestRunState(RUNS_DIR)
 
   if (!runState || runState.status === 'completed' || runState.status === 'failed') {
     // No active run — allow stop

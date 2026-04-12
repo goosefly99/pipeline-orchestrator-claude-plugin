@@ -2,23 +2,17 @@
 // send-message-guard.mjs — PreToolUse hook for SendMessage
 // Controls whether SendMessage is allowed, denied, or requires approval
 
-import { readFileSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { readStdin, loadConfig } from '../lib/common.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const CONFIG_PATH = join(__dirname, '..', 'runtime-config.json')
 
-let input = ''
-for await (const chunk of process.stdin) {
-  input += chunk
-}
+const input = await readStdin()
 
 try {
-  let config = { send_message_guard: { mode: 'ask', deny_reason: 'SendMessage requires approval.' } }
-  if (existsSync(CONFIG_PATH)) {
-    config = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'))
-  }
+  const config = { send_message_guard: { mode: 'ask', deny_reason: 'SendMessage requires approval.' }, ...loadConfig(CONFIG_PATH) }
 
   const guardConfig = config.send_message_guard || {}
   const mode = guardConfig.mode || 'ask'

@@ -2,44 +2,15 @@
 // post-phase-complete.mjs — PostToolUse hook for pipeline_complete_phase
 // Appends completion event to events.jsonl, emits next available phases
 
-import { readFileSync, readdirSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse } from 'smol-toml'
+import { readStdin, findLatestRunState } from '../lib/common.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const RUNS_DIR = join(__dirname, '..', '..', 'pipeline_mcp_data', 'runs')
 const PIPELINE_TOML = join(__dirname, '..', '..', 'pipeline', 'pipeline.toml')
-
-function findLatestRunState() {
-  if (!existsSync(RUNS_DIR)) return null
-
-  const runDirs = readdirSync(RUNS_DIR, { withFileTypes: true })
-    .filter(d => d.isDirectory())
-    .map(d => d.name)
-
-  let latestRun = null
-  let latestTime = 0
-  let latestDir = null
-
-  for (const dir of runDirs) {
-    const statePath = join(RUNS_DIR, dir, 'run-state.json')
-    if (!existsSync(statePath)) continue
-    try {
-      const state = JSON.parse(readFileSync(statePath, 'utf-8'))
-      const updatedAt = new Date(state.updated_at).getTime()
-      if (updatedAt > latestTime) {
-        latestTime = updatedAt
-        latestRun = state
-        latestDir = join(RUNS_DIR, dir)
-      }
-    } catch {
-      continue
-    }
-  }
-
-  return { state: latestRun, dir: latestDir }
-}
 
 function getNextPhases(runState) {
   if (!existsSync(PIPELINE_TOML) || !runState) return []
@@ -84,17 +55,14 @@ function getNextPhases(runState) {
   }
 }
 
-let input = ''
-for await (const chunk of process.stdin) {
-  input += chunk
-}
+const input = await readStdin()
 
 try {
   const hookInput = JSON.parse(input || '{}')
   const toolInput = hookInput.tool_input || {}
   const phaseName = toolInput.phase || toolInput.phase_name || 'unknown'
 
-  const { state: runState } = findLatestRunState() || {}
+  const runState = findLatestRunState(RUNS_DIR)
 
   // Find next available phases
   const nextPhases = getNextPhases(runState)

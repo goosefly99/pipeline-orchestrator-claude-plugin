@@ -2,9 +2,9 @@
 // file-read-version-guard.mjs — PreToolUse hook for Read
 // Prevents reading files that contain outdated version tags in their paths
 
-import { readFileSync, existsSync } from 'node:fs'
 import { join, dirname, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { readStdin, loadConfig } from '../lib/common.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const CONFIG_PATH = join(__dirname, '..', 'runtime-config.json')
@@ -27,20 +27,15 @@ function normalizeVersionPatterns(version) {
   return [...patterns]
 }
 
-let input = ''
-for await (const chunk of process.stdin) {
-  input += chunk
-}
+const input = await readStdin()
 
 try {
-  let config = {
+  const config = {
     file_read_version_guard: {
       present_version_in_development: '',
       previous_versions: [],
     },
-  }
-  if (existsSync(CONFIG_PATH)) {
-    config = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'))
+    ...loadConfig(CONFIG_PATH),
   }
 
   const guardConfig = config.file_read_version_guard || {}

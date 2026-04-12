@@ -6,6 +6,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSy
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
+import { readStdin, loadConfig } from '../lib/common.mjs'
 
 const MAX_SANITIZED_SESSION_ID_LEN = 128
 
@@ -78,16 +79,10 @@ function cleanupStaleSessionFiles(trackDir) {
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const CONFIG_PATH = join(__dirname, '..', 'runtime-config.json')
 
-let input = ''
-for await (const chunk of process.stdin) {
-  input += chunk
-}
+const input = await readStdin()
 
 try {
-  let config = { phase_session_isolation: { warn_only: true } }
-  if (existsSync(CONFIG_PATH)) {
-    config = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'))
-  }
+  const config = { phase_session_isolation: { warn_only: true }, ...loadConfig(CONFIG_PATH) }
 
   const guardConfig = config.phase_session_isolation || {}
   const warnOnly = guardConfig.warn_only !== false

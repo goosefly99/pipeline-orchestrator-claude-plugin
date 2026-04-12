@@ -2,11 +2,12 @@
 // token-budget-guard.mjs — PreToolUse hook for mcp__pipeline__pipeline_.*
 // Tracks transcript-based token cost and enforces budget limits
 
-import { readFileSync, existsSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createReadStream } from 'node:fs'
 import { createInterface } from 'node:readline'
+import { readStdin, loadConfig } from '../lib/common.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const CONFIG_PATH = join(__dirname, '..', 'runtime-config.json')
@@ -89,16 +90,10 @@ async function sumTranscriptCost(transcriptPath) {
 }
 
 // Read hook input from stdin
-let input = ''
-for await (const chunk of process.stdin) {
-  input += chunk
-}
+const input = await readStdin()
 
 try {
-  let config = { token_budget_guard: { max_extra_usage_usd: 5.0, warn_at_pct: 80 } }
-  if (existsSync(CONFIG_PATH)) {
-    config = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'))
-  }
+  const config = { token_budget_guard: { max_extra_usage_usd: 5.0, warn_at_pct: 80 }, ...loadConfig(CONFIG_PATH) }
 
   const guardConfig = config.token_budget_guard || {}
   const maxBudget = guardConfig.max_extra_usage_usd || 5.0

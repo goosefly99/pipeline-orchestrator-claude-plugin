@@ -6,6 +6,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse } from 'smol-toml'
+import { readStdin } from '../lib/common.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PIPELINE_TOML = join(__dirname, '..', '..', 'pipeline', 'pipeline.toml')
@@ -34,10 +35,7 @@ function loadQualityGate(phaseName) {
   }
 }
 
-let input = ''
-for await (const chunk of process.stdin) {
-  input += chunk
-}
+const input = await readStdin()
 
 try {
   const hookInput = JSON.parse(input || '{}')

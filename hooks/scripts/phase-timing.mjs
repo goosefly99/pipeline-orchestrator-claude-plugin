@@ -5,15 +5,13 @@
 import { appendFileSync, mkdirSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { readStdin } from '../lib/common.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const LOGS_DIR = join(__dirname, '..', 'hook-logs')
 const TIMING_PATH = join(LOGS_DIR, 'timing.jsonl')
 
-let input = ''
-for await (const chunk of process.stdin) {
-  input += chunk
-}
+const input = await readStdin()
 
 try {
   const hookInput = JSON.parse(input || '{}')

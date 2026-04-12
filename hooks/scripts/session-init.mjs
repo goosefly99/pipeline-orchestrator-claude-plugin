@@ -2,47 +2,18 @@
 // session-init.mjs — SessionStart hook
 // Scans for active run state, injects context via systemMessage
 
-import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { readStdin, findLatestRunState } from '../lib/common.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const RUNS_DIR = join(__dirname, '..', '..', 'pipeline_mcp_data', 'runs')
 
-// Read hook input from stdin
-let input = ''
-for await (const chunk of process.stdin) {
-  input += chunk
-}
+// Read hook input from stdin (drain it even though session-init doesn't consume the body)
+await readStdin()
 
 try {
-  // Find active run state
-  if (!existsSync(RUNS_DIR)) {
-    // No runs directory — no-op
-    process.exit(0)
-  }
-
-  const runDirs = readdirSync(RUNS_DIR, { withFileTypes: true })
-    .filter(d => d.isDirectory())
-    .map(d => d.name)
-
-  let latestRun = null
-  let latestTime = 0
-
-  for (const dir of runDirs) {
-    const statePath = join(RUNS_DIR, dir, 'run-state.json')
-    if (!existsSync(statePath)) continue
-    try {
-      const state = JSON.parse(readFileSync(statePath, 'utf-8'))
-      const updatedAt = new Date(state.updated_at).getTime()
-      if (updatedAt > latestTime) {
-        latestTime = updatedAt
-        latestRun = state
-      }
-    } catch {
-      continue
-    }
-  }
+  const latestRun = findLatestRunState(RUNS_DIR)
 
   if (!latestRun) {
     process.exit(0)
