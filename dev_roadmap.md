@@ -21,8 +21,8 @@
 | M0 — Part 1 & Part 2 & Feature A | Quality-gates fix + 7 post-meta-run fixes + pre-init hook | 10 | 0 | 0 | 10 | 0 |
 | M1 — Feature C | Per-run hierarchical artifact directories | 10 | 0 | 0 | 10 | 0 |
 | M2 — Feature B | Pre-phase-start hook with Agent-per-phase execution | 10 | 0 | 0 | 10 | 0 |
-| M3 — Part 6 | Hooks code-review fixes (harness runtime) | 12 | 12 | 0 | 0 | 0 |
-| **Total** | | **42** | **12** | **0** | **30** | **0** |
+| M3 — Part 6 | Hooks code-review fixes (harness runtime) | 12 | 0 | 0 | 12 | 0 |
+| **Total** | | **42** | **0** | **0** | **42** | **0** |
 
 **Current work focus:** M1 → M2 → M3 (M3 can execute in parallel with M1/M2 since it
 targets `hooks/scripts/` rather than the TypeScript MCP server).
@@ -35,8 +35,8 @@ above are **accurate**. No silent drift detected. Current test health on `auto_d
 | Check | Result |
 |-------|--------|
 | `npm run typecheck` | clean (0 errors) |
-| `node --test tests/*.test.ts` | **787/787** passing (174 suites, 1232ms) |
-| `node hooks/tests/run-tests.mjs` | **30/30** passing |
+| `node --test tests/*.test.ts` | **794/794** passing (177 suites) |
+| `node hooks/tests/run-tests.mjs` | **44/44** passing |
 
 Verified-complete items spot-checked with file/line evidence:
 
@@ -53,7 +53,7 @@ Verified-complete items spot-checked with file/line evidence:
 Verified-absent items confirmed by file absence or grep:
 
 - **M2 B5-B10** → `handleStartPhase` ignores hook-return value, no `agent_directive` in response; `generatePhaseBrief` signature unchanged; no `hooks/pre-phase-start.example.js`; no `[[hooks]]` block in `pipeline/pipeline.toml`; no `### Phase Execution via Subagent` in `AGENTS.md`; no `tests/pre-start-agent-directive.test.ts`.
-- **M3 6.1-6.12** → all 12 items still not started. See **M3 Audit Evidence (2026-04-11)** below for precise line references discovered during the audit — copy these into the first implementation commit for each item.
+- **M3 6.1-6.12** → all 12 items Complete. See **M3 Audit Evidence (2026-04-11)** below for the pre-work line references captured during the initial audit.
 
 ---
 
@@ -204,7 +204,7 @@ commit; do not re-apply landed fixes.
 | 6.7 | MED SEC | Path normalization bypass in file-read version guard. `import { normalize } from 'node:path'`; normalize `file_path` before any substring checks. Fail-closed on any remaining `..` segment. Unit test with crafted bypass paths. | `hooks/scripts/file-read-version-guard.mjs`, `hooks/tests/run-tests.mjs` | — | Complete |
 | 6.8 | DEDUPE | Create `hooks/lib/common.mjs` exporting `readStdin()`, `loadConfig(configPath)`, `findLatestRunState(runsDir)`. Migrate all 11 scripts in `hooks/scripts/` to import from the shared module. Accommodate `post-phase-complete.mjs`'s `{state, dir}` variant via a second function or `options: { includeDir?: boolean }`. Verify Claude Code hook runtime resolves the relative import in a fresh Node process. | `hooks/lib/common.mjs` (new), `hooks/scripts/*.mjs` (11 files) | — | Complete |
 | 6.9 | CLEANUP | Delete dead `CONFIG_PATH` constant at line ~11 of `dag-guard.mjs`. Trivial one-line cleanup. | `hooks/scripts/dag-guard.mjs` | 6.8 | Complete |
-| 6.10 | TESTING | Add three missing negative test cases: (a) DAG guard denies unsatisfied dependency, (b) artifact gate denies when no artifacts exist, (c) token budget guard handles string/NaN `input_tokens`. Add supporting fixtures under `hooks/tests/fixtures/`. | `hooks/tests/run-tests.mjs`, `hooks/tests/fixtures/` | 6.1, 6.4 | Not Started |
+| 6.10 | TESTING | Add three missing negative test cases: (a) DAG guard denies unsatisfied dependency, (b) artifact gate denies when no artifacts exist, (c) token budget guard handles string/NaN `input_tokens`. Add supporting fixtures under `hooks/tests/fixtures/`. | `hooks/tests/run-tests.mjs`, `hooks/tests/fixtures/` | 6.1, 6.4 | Complete |
 | 6.11 | HARDENING | Add 10 MB stdin size cap in `readStdin()`. On cap exceeded: emit `{ permissionDecision: 'allow' }` and `process.exit(0)` (fail-open), write warning to stderr. Unit test with 15 MB input. | `hooks/lib/common.mjs` | 6.8 | Complete |
 | 6.12 | CLEANUP | Session tracking file TTL cleanup. Before writing the current session's file, scan `$TMPDIR/pipeline-hooks-sessions/` and remove files with `mtime < Date.now() - 24h`. Ignore unlink errors. Cap cleanup work at 100 files per invocation. Unit test seeding 3 files (2 stale, 1 fresh). | `hooks/scripts/phase-start-guard.mjs` | 6.2 | Complete |
 

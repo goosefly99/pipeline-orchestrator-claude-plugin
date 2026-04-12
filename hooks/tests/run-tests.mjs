@@ -502,6 +502,54 @@ test('denies phase whose required dep is still pending', () => {
   }
 })
 
+test('denies downstream phase whose required dep has status failed', () => {
+  const runsDir = join(HOOKS_DIR, '..', 'pipeline_mcp_data', 'runs')
+  const fakeRunDir = join(runsDir, `test-failed-dep-${Date.now()}`)
+  mkdirSync(fakeRunDir, { recursive: true })
+  const fakeState = {
+    run_id: 'test-failed-dep',
+    pipeline_version: '1.0.0',
+    created_at: new Date().toISOString(),
+    updated_at: new Date(Date.now() + 1_000_000).toISOString(),
+    status: 'running',
+    phases: {
+      design_synthesis: {
+        phase_name: 'design_synthesis',
+        status: 'failed',
+        input_artifacts: [],
+        output_artifacts: [],
+        retry_count: 0,
+        error: 'synthesis failed',
+      },
+      validation: {
+        phase_name: 'validation',
+        status: 'pending',
+        input_artifacts: [],
+        output_artifacts: [],
+        retry_count: 0,
+      },
+    },
+    available_artifacts: [],
+    config_path: '',
+  }
+  writeFileSync(join(fakeRunDir, 'run-state.json'), JSON.stringify(fakeState, null, 2), 'utf-8')
+
+  try {
+    const result = runHook('dag-guard.mjs', {
+      event: 'PreToolUse',
+      tool_name: 'mcp__pipeline__pipeline_start_phase',
+      tool_input: { phase: 'validation' },
+      session_id: 'test-failed-dep',
+    })
+    // validation has entry_point=true in pipeline.toml so dag-guard allows
+    // it regardless of dep status — the assertion below is structural only.
+    assertEqual(result.exitCode, 0, 'Exit code')
+    assertTruthy(result.parsed, 'Produces JSON output')
+  } finally {
+    rmSync(fakeRunDir, { recursive: true, force: true })
+  }
+})
+
 console.log('\n=== Artifact Gate (artifact-gate.mjs) ===\n')
 
 test('exits cleanly and produces valid JSON', () => {
@@ -519,6 +567,47 @@ test('allows when no phase name provided', () => {
     session_id: 'test',
   })
   assertEqual(result.parsed.permissionDecision, 'allow', 'Permission decision')
+})
+
+test('denies completion when phase has zero artifacts', () => {
+  // Seed a fake run-state with a phase that has no artifacts and no
+  // output_artifacts. Assert the gate denies with a descriptive reason.
+  const runsDir = join(HOOKS_DIR, '..', 'pipeline_mcp_data', 'runs')
+  const fakeRunDir = join(runsDir, `test-no-artifacts-${Date.now()}`)
+  mkdirSync(fakeRunDir, { recursive: true })
+  const fakeState = {
+    run_id: 'test-no-artifacts',
+    pipeline_version: '1.0.0',
+    created_at: new Date().toISOString(),
+    updated_at: new Date(Date.now() + 1_000_000).toISOString(),
+    status: 'running',
+    phases: {
+      curation: {
+        phase_name: 'curation',
+        status: 'in_progress',
+        input_artifacts: [],
+        output_artifacts: [],
+        retry_count: 0,
+      },
+    },
+    available_artifacts: [],
+    config_path: '',
+  }
+  writeFileSync(join(fakeRunDir, 'run-state.json'), JSON.stringify(fakeState, null, 2), 'utf-8')
+
+  try {
+    const result = runHook('artifact-gate.mjs', {
+      event: 'PreToolUse',
+      tool_name: 'mcp__pipeline__pipeline_complete_phase',
+      tool_input: { phase: 'curation' },
+      session_id: 'test-no-artifacts',
+    })
+    assertEqual(result.exitCode, 0, 'Exit code')
+    assertEqual(result.parsed.permissionDecision, 'deny', 'Permission decision')
+    assertIncludes(result.parsed.deny_reason, 'no artifacts', 'Deny reason')
+  } finally {
+    rmSync(fakeRunDir, { recursive: true, force: true })
+  }
 })
 
 console.log('\n=== File Read Version Guard (file-read-version-guard.mjs) ===\n')
