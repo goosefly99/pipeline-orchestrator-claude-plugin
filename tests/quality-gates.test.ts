@@ -87,6 +87,29 @@ describe('checkFieldPresent', () => {
     assert.equal(result.passed, false)
     assert.ok(result.message.includes('misconfigured'))
   })
+
+  it('resolves dot-notation paths: passes when nested field is present', () => {
+    const artifact = { architecture: { components: ['A', 'B'] } }
+    const result = checkFieldPresent(artifact as Record<string, unknown>, { field: 'architecture.components' })
+    assert.equal(result.passed, true)
+  })
+
+  it('resolves dot-notation paths: fails when nested field is missing', () => {
+    const artifact = { architecture: { title: 'foo' } }  // no 'components'
+    const result = checkFieldPresent(artifact as Record<string, unknown>, { field: 'architecture.components' })
+    assert.equal(result.passed, false)
+    assert.match(result.message, /architecture\.components/)
+  })
+
+  it('design-spec with only architecture.components (no top-level components) passes the gate', () => {
+    const artifact = {
+      spec_id: 'test',
+      title: 'T',
+      architecture: { components: [{ name: 'C1', description: 'd', responsibilities: [] }] },
+    }
+    const result = checkFieldPresent(artifact as Record<string, unknown>, { field: 'architecture.components' })
+    assert.equal(result.passed, true)
+  })
 })
 
 // ── checkMinItems ────────────────────────────────────────────
