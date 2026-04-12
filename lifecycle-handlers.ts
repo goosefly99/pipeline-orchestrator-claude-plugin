@@ -395,12 +395,24 @@ export function handleStartPhase(args: Record<string, unknown>, ctx: LifecycleCo
   const updated = ctx.startPhase(state, phaseName, activeRunDir)
   ctx.setActiveRun(updated)
 
+  // Resolve model using 3-tier precedence:
+  // 1. phase-specific model in pipeline.toml (config.phases[phaseName].model)
+  // 2. run_parameters.phase_model
+  // 3. default 'claude-sonnet-4-6'
+  const phaseDef = config.phases[phaseName]
+  const phaseModelParam = state.run_parameters?.phase_model
+  const resolvedModel: string =
+    (typeof phaseDef?.model === 'string' && phaseDef.model.length > 0 ? phaseDef.model : undefined) ??
+    (typeof phaseModelParam === 'string' && phaseModelParam.length > 0 ? phaseModelParam : undefined) ??
+    'claude-sonnet-4-6'
+
   // Log phase_started event
   appendEvent(activeRunDir, {
     timestamp: new Date().toISOString(),
     event: 'phase_started',
     phase: phaseName,
     run_id: updated.run_id,
+    resolved_model: resolvedModel,
   })
 
   const phase = config.phases[phaseName]
@@ -415,6 +427,7 @@ export function handleStartPhase(args: Record<string, unknown>, ctx: LifecycleCo
       outputs: phase.outputs,
       tools: phase.tools,
       input_artifacts: inputArtifacts,
+      resolved_model: resolvedModel,
     }, null, 2),
   }
 }
@@ -714,6 +727,19 @@ export function handleRunStatus(ctx: LifecycleContext): HandlerResponse {
     artifacts: state.available_artifacts,
     recommended_action,
   }
+  // Expose resolved_model for the current in-progress phase (cost auditing)
+  const inProgressPhase = Object.entries(state.phases).find(([, p]) => p.status === 'in_progress')
+  if (inProgressPhase) {
+    const [inProgressName] = inProgressPhase
+    const phaseDef = config.phases[inProgressName]
+    const phaseModelParam = state.run_parameters?.phase_model
+    const currentResolvedModel: string =
+      (typeof phaseDef?.model === 'string' && phaseDef.model.length > 0 ? phaseDef.model : undefined) ??
+      (typeof phaseModelParam === 'string' && phaseModelParam.length > 0 ? phaseModelParam : undefined) ??
+      'claude-sonnet-4-6'
+    result.current_phase_resolved_model = currentResolvedModel
+  }
+
   if (warnings.length > 0) result.warnings = warnings
   if (staleNote) result.state_reloaded = staleNote
 

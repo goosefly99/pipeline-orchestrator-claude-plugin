@@ -27,6 +27,8 @@ export interface PhaseDefinition {
   reusable?: boolean
   /** Recommended model tier for this phase. */
   model_tier?: 'haiku' | 'sonnet' | 'opus'
+  /** Explicit Claude model ID override for this phase (e.g. "claude-opus-4-5"). Takes precedence over run_parameters.phase_model. */
+  model?: string
 }
 
 export interface EdgeDefinition {
@@ -211,6 +213,8 @@ export interface LifecycleEvent {
     | 'artifact_stored'
   phase: string
   run_id: string
+  /** Present only on phase_started events: the Claude model ID used for this phase. */
+  resolved_model?: string
   details?: Record<string, unknown>
 }
 
