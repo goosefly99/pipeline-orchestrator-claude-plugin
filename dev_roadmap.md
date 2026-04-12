@@ -206,7 +206,7 @@ commit; do not re-apply landed fixes.
 | 6.9 | CLEANUP | Delete dead `CONFIG_PATH` constant at line ~11 of `dag-guard.mjs`. Trivial one-line cleanup. | `hooks/scripts/dag-guard.mjs` | 6.8 | Not Started |
 | 6.10 | TESTING | Add three missing negative test cases: (a) DAG guard denies unsatisfied dependency, (b) artifact gate denies when no artifacts exist, (c) token budget guard handles string/NaN `input_tokens`. Add supporting fixtures under `hooks/tests/fixtures/`. | `hooks/tests/run-tests.mjs`, `hooks/tests/fixtures/` | 6.1, 6.4 | Not Started |
 | 6.11 | HARDENING | Add 10 MB stdin size cap in `readStdin()`. On cap exceeded: emit `{ permissionDecision: 'allow' }` and `process.exit(0)` (fail-open), write warning to stderr. Unit test with 15 MB input. | `hooks/lib/common.mjs` | 6.8 | Not Started |
-| 6.12 | CLEANUP | Session tracking file TTL cleanup. Before writing the current session's file, scan `$TMPDIR/pipeline-hooks-sessions/` and remove files with `mtime < Date.now() - 24h`. Ignore unlink errors. Cap cleanup work at 100 files per invocation. Unit test seeding 3 files (2 stale, 1 fresh). | `hooks/scripts/phase-start-guard.mjs` | 6.2 | Not Started |
+| 6.12 | CLEANUP | Session tracking file TTL cleanup. Before writing the current session's file, scan `$TMPDIR/pipeline-hooks-sessions/` and remove files with `mtime < Date.now() - 24h`. Ignore unlink errors. Cap cleanup work at 100 files per invocation. Unit test seeding 3 files (2 stale, 1 fresh). | `hooks/scripts/phase-start-guard.mjs` | 6.2 | Complete |
 
 ### M3 Audit Evidence (2026-04-11)
 

@@ -3,7 +3,7 @@
 // Pipes JSON fixtures through scripts and validates exit codes + output structure
 
 import { execFileSync } from 'node:child_process'
-import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, utimesSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
@@ -288,6 +288,43 @@ test('allows safe alphanumeric session_id', () => {
     session_id: `safe-session-${Date.now()}`,
   })
   assertEqual(result.parsed.permissionDecision, 'allow', 'Permission decision')
+  cleanupConfig()
+})
+
+test('cleans up stale session-tracking files older than 24h', () => {
+  setupConfig()
+  const trackDir = join(tmpdir(), 'pipeline-hooks-sessions')
+  if (!existsSync(trackDir)) mkdirSync(trackDir, { recursive: true })
+
+  // Seed 2 stale files (mtime 25h ago) and 1 fresh file (mtime now)
+  const staleTime = Date.now() - 25 * 60 * 60 * 1000
+  const staleFile1 = join(trackDir, 'session-stale-one.json')
+  const staleFile2 = join(trackDir, 'session-stale-two.json')
+  const freshFile = join(trackDir, 'session-fresh.json')
+  writeFileSync(staleFile1, '{"phases_started":["a"]}', 'utf-8')
+  writeFileSync(staleFile2, '{"phases_started":["b"]}', 'utf-8')
+  writeFileSync(freshFile, '{"phases_started":["c"]}', 'utf-8')
+
+  // Backdate mtimes on the stale files. utimesSync takes seconds.
+  const stalSec = staleTime / 1000
+  utimesSync(staleFile1, stalSec, stalSec)
+  utimesSync(staleFile2, stalSec, stalSec)
+
+  // Run the hook once — this triggers cleanupStaleSessionFiles
+  runHook('phase-start-guard.mjs', {
+    event: 'PreToolUse',
+    tool_name: 'mcp__pipeline__pipeline_start_phase',
+    tool_input: { phase: `ttl_test_${Date.now()}` },
+    session_id: `ttl-session-${Date.now()}`,
+  })
+
+  // Stale files should be gone; fresh file should survive.
+  assertEqual(existsSync(staleFile1), false, 'stale file 1 removed')
+  assertEqual(existsSync(staleFile2), false, 'stale file 2 removed')
+  assertEqual(existsSync(freshFile), true, 'fresh file preserved')
+
+  // Cleanup residual files we created
+  if (existsSync(freshFile)) rmSync(freshFile)
   cleanupConfig()
 })
 

@@ -2,7 +2,7 @@
 // phase-start-guard.mjs — PreToolUse hook for pipeline_start_phase
 // Tracks phases started per session via TMPDIR temp files, warns or denies repeat starts
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
@@ -33,6 +33,46 @@ function sanitizeSessionId(raw) {
     return { ok: false, reason: 'session_id contains disallowed characters (only [A-Za-z0-9_-] permitted)' }
   }
   return { ok: true, sanitized }
+}
+
+const SESSION_FILE_TTL_MS = 24 * 60 * 60 * 1000  // 24 hours
+const SESSION_CLEANUP_MAX_FILES = 100
+
+/**
+ * Remove stale session-tracking files in trackDir whose mtime is older than
+ * SESSION_FILE_TTL_MS. Caps work at SESSION_CLEANUP_MAX_FILES per invocation
+ * so a huge $TMPDIR never makes this hook slow. Unlink errors are swallowed
+ * — this is best-effort housekeeping, not a correctness barrier.
+ */
+function cleanupStaleSessionFiles(trackDir) {
+  if (!existsSync(trackDir)) return
+  let entries
+  try {
+    entries = readdirSync(trackDir)
+  } catch {
+    return
+  }
+  const cutoff = Date.now() - SESSION_FILE_TTL_MS
+  let processed = 0
+  for (const name of entries) {
+    if (processed >= SESSION_CLEANUP_MAX_FILES) break
+    if (!name.startsWith('session-') || !name.endsWith('.json')) continue
+    const full = join(trackDir, name)
+    let mtimeMs
+    try {
+      mtimeMs = statSync(full).mtimeMs
+    } catch {
+      continue
+    }
+    if (mtimeMs < cutoff) {
+      try {
+        unlinkSync(full)
+      } catch {
+        // Ignore — another process may have just deleted it, or permissions.
+      }
+    }
+    processed++
+  }
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -73,6 +113,12 @@ try {
   // Track phases per session in TMPDIR
   const trackDir = join(tmpdir(), 'pipeline-hooks-sessions')
   if (!existsSync(trackDir)) mkdirSync(trackDir, { recursive: true })
+
+  // Best-effort cleanup of session-tracking files older than 24h so
+  // $TMPDIR/pipeline-hooks-sessions/ doesn't grow unbounded across runs.
+  // Scoped, rate-limited, and swallows errors — correctness never depends
+  // on this firing.
+  cleanupStaleSessionFiles(trackDir)
 
   const sessionFile = join(trackDir, `session-${sessionId}.json`)
   let sessionData = { phases_started: [] }
