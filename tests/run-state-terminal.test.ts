@@ -146,6 +146,32 @@ describe('computeRunTerminalStatus', () => {
     state = skipPhase(state, 'discovery', tempDir)
     assert.equal(computeRunTerminalStatus(state, config), 'completed')
   })
+
+  it('returns "completed" when a terminal phase (no outgoing edges) completes, even with reachable feedback-loop phases still pending', () => {
+    // Simulates: implementation_scaffold (terminal) completed, but research_discovery
+    // (entry_point=true, reachable via validation feedback edge) is still pending.
+    const config = makeConfig(
+      {
+        validation: { entry_point: true },
+        implementation_scaffold: { entry_point: false, inputs: ['design-spec'] },
+        research_discovery: { entry_point: true },
+      },
+      [
+        { from: 'validation', to: 'research_discovery' }, // feedback edge makes it reachable
+        // no edges FROM implementation_scaffold — it is the terminal node
+      ],
+    )
+    let state = initRun('test', '1.0.0', ['validation', 'implementation_scaffold', 'research_discovery'], tempDir)
+    state = startPhase(state, 'validation', tempDir)
+    state = completePhase(state, 'validation', tempDir)
+    state = startPhase(state, 'implementation_scaffold', tempDir)
+    state = completePhase(state, 'implementation_scaffold', tempDir)
+
+    // research_discovery is pending and technically reachable via the feedback edge,
+    // but implementation_scaffold has no outgoing edges — run must be 'completed'.
+    assert.equal(state.phases.research_discovery.status, 'pending')
+    assert.equal(computeRunTerminalStatus(state, config), 'completed')
+  })
 })
 
 describe('finalizeRunTerminalStatus', () => {

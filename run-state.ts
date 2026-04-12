@@ -513,6 +513,8 @@ export function computeRunWarnings(
  * Precedence:
  *   1. Any phase 'failed'        → 'failed'
  *   2. Any phase 'in_progress'   → 'running'
+ *   2.5. Any terminal phase (no outgoing edges) 'completed'  → 'completed'
+ *        (pending feedback-loop phases are treated as effectively done)
  *   3. resolveNextPhases empty   → 'completed'   (no more forward progress possible;
  *                                                 pending phases from untaken DAG
  *                                                 branches are treated as effectively
@@ -532,6 +534,25 @@ export function computeRunTerminalStatus(
 
   if (phases.some(p => p.status === 'failed')) return 'failed'
   if (phases.some(p => p.status === 'in_progress')) return 'running'
+
+  // Terminal-node detection: if any phase with no outgoing DAG edges ('terminal
+  // node') has completed, the run's primary path is exhausted. Pending phases
+  // that remain reachable only via feedback loops (e.g. research_discovery via
+  // the validation → research_discovery edge) are treated as effectively done.
+  // Guard: only apply this if every pending phase has at least one incoming edge
+  // (i.e. no pending phase is an independent entry-point that can run on its own).
+  const terminalNodeCompleted = Object.entries(state.phases).some(
+    ([name, phaseState]) =>
+      phaseState.status === 'completed' &&
+      config.edges.every(e => e.from !== name),
+  )
+  const pendingPhases = Object.entries(state.phases).filter(
+    ([, phaseState]) => phaseState.status === 'pending',
+  )
+  const allPendingHaveIncomingEdges = pendingPhases.every(([name]) =>
+    config.edges.some(e => e.to === name),
+  )
+  if (terminalNodeCompleted && allPendingHaveIncomingEdges) return 'completed'
 
   const completed = getCompletedPhases(state)
   const skipped = getSkippedPhases(state)
