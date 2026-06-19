@@ -1,6 +1,6 @@
 {
   "name": "pipeline-mcp",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Pipeline orchestrator MCP server — reads pipeline.toml, resolves DAG, validates artifacts, manages run state",
   "type": "module",
   "bin": "./server.ts",

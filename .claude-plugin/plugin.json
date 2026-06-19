@@ -1,6 +1,6 @@
 {
   "name": "pipeline-orchestrator-auto-dev",
   "description": "Pipeline orchestrator MCP server — reads pipeline.toml, resolves DAG, validates artifacts, manages run state, and coordinates research/debate/synth phases",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "author": { "name": "olive" }
 }
