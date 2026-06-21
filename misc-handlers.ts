@@ -4,7 +4,7 @@ import { existsSync, readFileSync, writeFileSync, statSync, readdirSync } from '
 import { isAbsolute, resolve, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { parse as parseTOML, stringify as stringifyTOML } from 'smol-toml'
-import { ingestDocumentsAsync } from './ingest.ts'
+import { ingestDocumentsAsync, enumerateDir } from './ingest.ts'
 import { executeWebSearch } from './web-search.ts'
 import { analyzeCodebase } from './codebase-analyzer.ts'
 import { queryItems, persistRawCollection } from './collections.ts'
@@ -201,7 +201,26 @@ export async function handleIngestDocuments(
   const shouldValidate = (args.validate as boolean | undefined) ?? true
   const jsonItemsKey = args.json_items_key as string | undefined
 
-  const collection = await ingestDocumentsAsync(filePaths, ingestName, jsonItemsKey)
+  // Expand any directory entries into their supported files (Phase 3 — SP3-P3).
+  // Plain-file entries pass through unchanged. A directory yielding zero supported
+  // files is silently skipped (not an error).
+  const expandedPaths: string[] = []
+  for (const entry of filePaths) {
+    let isDir = false
+    try {
+      isDir = statSync(entry).isDirectory()
+    } catch {
+      // statSync throws for non-existent paths; ingestDocumentsAsync will surface the error
+    }
+    if (isDir) {
+      const found = enumerateDir(entry)
+      expandedPaths.push(...found)
+    } else {
+      expandedPaths.push(entry)
+    }
+  }
+
+  const collection = await ingestDocumentsAsync(expandedPaths, ingestName, jsonItemsKey)
 
   if (shouldValidate) {
     const result = ctx.validateArtifact(ctx.getSchemas(), 'raw-collection.json', collection)

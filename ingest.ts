@@ -1,5 +1,5 @@
-import { readFileSync, statSync } from 'node:fs'
-import { extname, basename } from 'node:path'
+import { readFileSync, statSync, readdirSync } from 'node:fs'
+import { extname, basename, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 
 // ── Types matching raw-collection.json schema ─────────────────
@@ -88,6 +88,37 @@ const EXT_MAP: Record<string, FileType> = {
 export function detectFileType(filePath: string): FileType {
   const ext = extname(filePath).toLowerCase()
   return EXT_MAP[ext] ?? 'text'
+}
+
+// ── Directory enumeration ─────────────────────────────────────
+
+/**
+ * Recursively walk a directory and return all files whose extension is in the
+ * supported-type map (EXT_MAP). Dot-directories (e.g. `.git`, `.obsidian`) and
+ * any directory named `index` or ending in `.tmp` are skipped so we never
+ * inadvertently ingest the COLD vector store at `/data/vault/index`.
+ *
+ * Returns an empty array if `dir` contains no supported files.
+ */
+export function enumerateDir(dir: string): string[] {
+  const results: string[] = []
+  const entries = readdirSync(dir, { withFileTypes: true })
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      const name = entry.name
+      // Skip dot-dirs, the COLD store root, and tmp dirs
+      if (name.startsWith('.') || name === 'index' || name.endsWith('.tmp')) {
+        continue
+      }
+      results.push(...enumerateDir(join(dir, name)))
+    } else if (entry.isFile()) {
+      const ext = extname(entry.name).toLowerCase()
+      if (ext in EXT_MAP) {
+        results.push(join(dir, entry.name))
+      }
+    }
+  }
+  return results
 }
 
 // ── Content extraction ────────────────────────────────────────

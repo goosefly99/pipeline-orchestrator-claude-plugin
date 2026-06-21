@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-import { ingestDocumentsAsync, detectFileType, extractContent, normalizeDate } from '../ingest.ts'
+import { ingestDocumentsAsync, detectFileType, extractContent, normalizeDate, enumerateDir } from '../ingest.ts'
 
 let tempDir: string
 
@@ -516,5 +516,60 @@ describe('disk-first ingestion response shape', () => {
     assert.equal(diskCollection.status, 'raw')
     assert.ok(Array.isArray(diskCollection.items))
     assert.equal((diskCollection.items as unknown[]).length, 3)
+  })
+})
+
+// ── enumerateDir ─────────────────────────────────────────────
+
+describe('enumerateDir', () => {
+  it('recursively expands supported files, excludes unsupported and dot-dirs', () => {
+    // Layout:
+    //   <tempDir>/vault/
+    //     note.md          ← supported
+    //     readme.txt       ← supported
+    //     binary.bin       ← unsupported (no EXT_MAP entry)
+    //     sub/
+    //       deep.yaml      ← supported (nested subdir)
+    //     .obsidian/
+    //       settings.json  ← in dot-dir — must be excluded
+    //     index/
+    //       corpus.md      ← in index/ (COLD store sentinel) — must be excluded
+    const vaultDir = join(tempDir, 'vault')
+    const subDir = join(vaultDir, 'sub')
+    const dotDir = join(vaultDir, '.obsidian')
+    const indexDir = join(vaultDir, 'index')
+    mkdirSync(subDir, { recursive: true })
+    mkdirSync(dotDir, { recursive: true })
+    mkdirSync(indexDir, { recursive: true })
+
+    writeFileSync(join(vaultDir, 'note.md'), '# Note')
+    writeFileSync(join(vaultDir, 'readme.txt'), 'readme')
+    writeFileSync(join(vaultDir, 'binary.bin'), '\x00\x01\x02')
+    writeFileSync(join(subDir, 'deep.yaml'), 'key: value')
+    writeFileSync(join(dotDir, 'settings.json'), '{}')
+    writeFileSync(join(indexDir, 'corpus.md'), '# Corpus')
+
+    const found = enumerateDir(vaultDir).sort()
+
+    // Should include: note.md, readme.txt, sub/deep.yaml — exactly 3
+    assert.equal(found.length, 3, `Expected 3 supported files, got ${found.length}: ${found.join(', ')}`)
+    assert.ok(found.some(p => p.endsWith('note.md')), 'note.md should be included')
+    assert.ok(found.some(p => p.endsWith('readme.txt')), 'readme.txt should be included')
+    assert.ok(found.some(p => p.includes('sub') && p.endsWith('deep.yaml')), 'sub/deep.yaml should be included')
+    // Exclusions
+    assert.ok(!found.some(p => p.endsWith('.bin')), 'binary.bin must be excluded (unsupported extension)')
+    assert.ok(!found.some(p => p.includes('.obsidian')), '.obsidian dot-dir must be excluded')
+    assert.ok(!found.some(p => p.includes(join('index', 'corpus.md'))), 'index/ must be excluded (COLD store sentinel)')
+  })
+
+  it('returns empty array for a directory with no supported files', () => {
+    const emptyDir = join(tempDir, 'empty-vault')
+    const binDir = join(emptyDir, 'bins')
+    mkdirSync(binDir, { recursive: true })
+    writeFileSync(join(emptyDir, 'data.bin'), '\x00')
+    writeFileSync(join(binDir, 'other.exe'), '\x00')
+
+    const found = enumerateDir(emptyDir)
+    assert.equal(found.length, 0, 'Should return empty array when no supported files exist')
   })
 })
