@@ -113,6 +113,9 @@ export function enumerateDir(dir: string): string[] {
       results.push(...enumerateDir(join(dir, name)))
     } else if (entry.isFile()) {
       const ext = extname(entry.name).toLowerCase()
+      // Deliberate membership test against EXT_MAP, NOT detectFileType(): the
+      // latter falls back to 'text' for unknown extensions, which would ingest
+      // every file. Enumeration must include only known-supported types.
       if (ext in EXT_MAP) {
         results.push(join(dir, entry.name))
       }
