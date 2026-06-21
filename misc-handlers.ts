@@ -270,8 +270,8 @@ export function handleKBSearch(
     ? ctx.baseDirFromRunDir(ctx.getActiveRunDir())
     : resolve(ctx.getProjectRoot(), ctx.getConfigStorageBaseDir())
 
-  // Scan for built indexes under kb/vectors/
-  const kbDir = join(baseDir, 'kb', 'vectors')
+  // Scan for built indexes under kb/bm25/
+  const kbDir = join(baseDir, 'kb', 'bm25')
   if (!existsSync(kbDir)) {
     return {
       json: JSON.stringify({

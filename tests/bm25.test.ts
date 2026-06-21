@@ -193,10 +193,10 @@ describe('BM25Index', () => {
 })
 
 describe('bm25IndexDir', () => {
-  it('returns path under baseDir/kb/vectors/<collection>', () => {
+  it('returns path under baseDir/kb/bm25/<collection>', () => {
     const result = bm25IndexDir('/data/pipeline', 'my-collection')
     assert.ok(result.includes('kb'))
-    assert.ok(result.includes('vectors'))
+    assert.ok(result.includes('bm25'))
     assert.ok(result.includes('my-collection'))
   })
 

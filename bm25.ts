@@ -180,5 +180,5 @@ export class BM25Index {
 // ── Index path resolver ──────────────────────────────────────
 
 export function bm25IndexDir(baseDir: string, collectionName: string): string {
-  return resolve(join(baseDir, 'kb', 'vectors', collectionName))
+  return resolve(join(baseDir, 'kb', 'bm25', collectionName))
 }

@@ -307,7 +307,9 @@ overviews = "overviews"
 specs = "specs"
 debates = "debates"
 codebase = "codebase"
-vector_indices = "kb/vectors"
+bm25_indices = "kb/bm25"      # WARM lexical (local BM25 over pipeline collections)
+vector_indices = "kb/vectors" # COLD vector — pointer to the OS second_brain store
+                              # at /data/vault/index; this plugin NEVER writes here.
 
 
 # ── Lifecycle Hooks ─────────────────────────────────────────
