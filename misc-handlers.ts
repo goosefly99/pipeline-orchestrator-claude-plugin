@@ -12,6 +12,7 @@ import { BM25Index, bm25IndexDir } from './bm25.ts'
 import {
   createKBClient,
   appendSearchEntry,
+  vectorSearch,
   sqlQuery,
   exportQueryLog,
   type KBConfig,
@@ -251,10 +252,10 @@ export function handleAnalyzeCodebase(args: Record<string, unknown>): HandlerRes
 
 // ── KB handlers ───────────────────────────────────────────────
 
-export function handleKBSearch(
+export async function handleKBSearch(
   args: Record<string, unknown>,
   ctx: KBBuildIndexContext,
-): HandlerResponse {
+): Promise<HandlerResponse> {
   const runId = args.run_id as string
   const phase = args.phase as string
   const query = args.query as string
@@ -309,11 +310,42 @@ export function handleKBSearch(
   // Log the query
   appendSearchEntry(runId, phase, query, results.length)
 
+  // ── Additive vector leg (SP3-P2) ────────────────────────────
+  // Env-gated, never throws, never mutates the BM25 `results`/`results_count`
+  // above. When SECOND_BRAIN_INDEX_PATH is unset (dev hosts, no COLD store),
+  // behavior is byte-identical to before: no adapter call, vector_status:'disabled'.
+  let vectorResults: unknown[] = []
+  let vectorStatus = 'disabled'
+  if (process.env.SECOND_BRAIN_INDEX_PATH) {
+    const vectorClient = createKBClient({
+      name: 'second_brain',
+      type: 'vector',
+      provider: 'second_brain',
+      config: {},
+    })
+    const vectorResult = await vectorSearch(vectorClient, {
+      run_id: runId,
+      phase,
+      query,
+      top_k: topK,
+      filter,
+    })
+    if (vectorResult.status === 'ok') {
+      vectorResults = vectorResult.results
+      vectorStatus = 'ok'
+    } else {
+      vectorResults = []
+      vectorStatus = vectorResult.status
+    }
+  }
+
   return {
     json: JSON.stringify({
       status: 'ok',
       results,
       results_count: results.length,
+      vector_results: vectorResults,
+      vector_status: vectorStatus,
     }, null, 2),
   }
 }

@@ -104,6 +104,8 @@ import {
   type WebSearchContext,
   type RegisterScaffoldOutputsContext,
 } from './misc-handlers.ts'
+import { registerAdapter } from './kb-client.ts'
+import { createSecondBrainAdapter } from './second-brain-adapter.ts'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PIPELINE_DIR = resolve(__dirname, 'pipeline')
@@ -368,6 +370,12 @@ const scaffoldRegisterCtx: RegisterScaffoldOutputsContext = {
   addArtifact: (...a) => addArtifact(...a),
 }
 
+// Register the live `vector:second_brain` provider adapter once at startup.
+// vectorSearch() in kb-client.ts looks it up by `vector:<provider>` key; with no
+// SECOND_BRAIN_INDEX_PATH set (e.g. this dev host) the adapter is a no-op that
+// returns provider_not_configured without spawning anything.
+registerAdapter(createSecondBrainAdapter())
+
 const server = new Server(
   { name: 'pipeline', version: '0.3.0' },
   {
@@ -531,7 +539,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         return text(r.json, r.isError)
       }
       case 'pipeline_kb_search': {
-        const r = kbSearchHandler(args, kbBuildIndexCtx)
+        const r = await kbSearchHandler(args, kbBuildIndexCtx)
         return text(r.json, r.isError)
       }
       case 'pipeline_kb_sql_query': {
