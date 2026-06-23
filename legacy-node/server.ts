@@ -377,7 +377,7 @@ const scaffoldRegisterCtx: RegisterScaffoldOutputsContext = {
 registerAdapter(createSecondBrainAdapter())
 
 const server = new Server(
-  { name: 'pipeline', version: '0.3.0' },
+  { name: 'pipeline-node', version: '0.3.0' },
   {
     capabilities: { tools: {} },
     instructions: 'Pipeline orchestrator MCP server. Reads pipeline.toml to understand phases and DAG edges. ' +

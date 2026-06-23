@@ -1,0 +1,6 @@
+{
+  "name": "pipeline-orchestrator-node",
+  "description": "Reference-only Node implementation of pipeline-orchestrator (disabled by default; the Python port at the repo root is canonical). Reads pipeline.toml, resolves the DAG, validates artifacts, manages run state, and coordinates research/debate/synth phases.",
+  "version": "0.3.1",
+  "author": { "name": "olive" }
+}
