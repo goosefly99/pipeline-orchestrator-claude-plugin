@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "debate-transcript.json",
+  "title": "Debate Transcript",
+  "description": "Structured record of an adversarial multi-agent debate from Phase D. Contains all agent arguments, evidence citations, proposed changes, and the synthesizer's final decisions. The refined artifact (updated knowledge-overview or design-spec) is produced as a separate output alongside this transcript.",
+  "type": "object",
+  "required": ["transcript_id", "input_type", "input_id", "created_date", "rounds", "synthesis"],
+  "properties": {
+    "transcript_id": {
+      "type": "string",
+      "description": "Unique identifier: dt-{8char_hex}"
+    },
+    "input_type": {
+      "type": "string",
+      "enum": ["knowledge-overview", "design-spec"],
+      "description": "Which artifact type was debated"
+    },
+    "input_id": {
+      "type": "string",
+      "description": "ID of the artifact being debated (overview_id or spec_id)"
+    },
+    "input_version": {
+      "type": "string",
+      "description": "Version of the artifact before debate"
+    },
+    "output_version": {
+      "type": "string",
+      "description": "Version of the refined artifact after debate"
+    },
+    "created_date": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "codebase_requirements_id": {
+      "type": "string",
+      "description": "ID of codebase-requirements used as context during debate (if any)"
+    },
+    "kb_queries_used": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether knowledge base queries were made during this debate"
+    },
+    "rounds": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/DebateRound" }
+    },
+    "synthesis": {
+      "$ref": "#/$defs/Synthesis"
+    }
+  },
+  "$defs": {
+    "DebateRound": {
+      "type": "object",
+      "required": ["round", "type", "agents"],
+      "properties": {
+        "round": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "type": {
+          "type": "string",
+          "enum": ["divergent", "convergent"],
+          "description": "Divergent: agents analyze independently in parallel. Convergent: synthesizer resolves."
+        },
+        "agents": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/AgentArgument" }
+        }
+      }
+    },
+    "AgentArgument": {
+      "type": "object",
+      "required": ["role", "position"],
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": ["advocate", "critic", "risk_specialist", "domain_specialist", "synthesizer"],
+          "description": "Agent role in the debate"
+        },
+        "position": {
+          "type": "string",
+          "description": "The agent's primary argument or assessment"
+        },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Source item IDs, KB query results, or codebase references supporting the position"
+        },
+        "counterpoints": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Specific counterarguments to other positions or to the current artifact"
+        },
+        "proposed_changes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Concrete changes recommended to the artifact"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Agent's confidence in their position (0-1)"
+        }
+      }
+    },
+    "Synthesis": {
+      "type": "object",
+      "required": ["changes_accepted", "changes_rejected"],
+      "properties": {
+        "changes_accepted": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Changes incorporated into the refined artifact, with brief rationale"
+        },
+        "changes_rejected": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["proposed", "reason"],
+            "properties": {
+              "proposed": {
+                "type": "string",
+                "description": "The proposed change that was rejected"
+              },
+              "reason": {
+                "type": "string",
+                "description": "Why the synthesizer rejected this change"
+              }
+            }
+          }
+        },
+        "open_questions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Unresolved questions that may require additional research or human decision"
+        }
+      }
+    }
+  }
+}

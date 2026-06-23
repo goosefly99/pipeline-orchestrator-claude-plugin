@@ -1,0 +1,340 @@
+# Research-to-Implementation Pipeline Specification
+# Version 1.0.0
+#
+# DAG pipeline that transforms raw research from arbitrary sources into
+# validated implementation specs, with optional adversarial debate and
+# codebase-aware synthesis. Each phase declares typed inputs and outputs;
+# the graph is derived from schema compatibility.
+
+[pipeline]
+id = "research-to-implementation"
+version = "1.0.0"
+description = "DAG pipeline: research discovery, curation, concept extraction, design synthesis, and implementation scaffolding with optional adversarial debate, codebase analysis, and knowledge base integration"
+
+# ── Phase Definitions ───────────────────────────────────────
+#
+# Per-phase model overrides (Feature B):
+#   Each [phases.<name>] block may declare an optional `model` field giving
+#   the concrete Claude model ID the spawned subagent should use. Precedence
+#   at `pre_start` hook fire time is:
+#     1. Phase-specific `model` in this file                  (highest)
+#     2. `run_parameters.phase_model` from pre_pipeline_init  (run-scoped default)
+#     3. Hard-coded default `"claude-sonnet-4-6"`             (fallback)
+#
+#   Convention in this file:
+#     - Planning-heavy phases (design_synthesis, debate, implementation_scaffold)
+#       use `claude-opus-4-6` — deeper reasoning, architectural decisions,
+#       adversarial synthesis.
+#     - Bounded execution phases (document_ingestion, research_discovery,
+#       curation, concept_extraction, codebase_analysis, validation) use
+#       `claude-sonnet-4-6` — faster and cheaper for well-scoped work.
+#
+#   Omit `model` entirely to fall through to `run_parameters.phase_model`.
+
+[phases.document_ingestion]
+id = "I"
+description = "Ingest arbitrary local documents (PDF, markdown, text, CSV, HTML, JSON, YAML, code, notebooks) into a raw collection"
+inputs = ["file-paths"]
+outputs = ["raw-collection"]
+tools = ["ingest_documents", "web_search"]
+entry_point = true
+optional = true
+model = "claude-sonnet-4-6"
+
+[phases.research_discovery]
+id = 0
+description = "Fan out across configured sources (X/Twitter, web, APIs, local files) to collect raw research items based on a research manifest"
+inputs = ["research-manifest"]
+outputs = ["raw-collection"]
+tools = [
+  "x_authorize", "x_get_bookmarks", "x_search_tweets", "x_get_tweet",
+  "x_get_user_tweets", "x_get_user", "x_get_thread", "x_get_article",
+  "x_crawl_article", "x_browser_login",
+  "WebFetch", "Firecrawl", "Read",
+]
+entry_point = true
+model = "claude-sonnet-4-6"
+
+[phases.curation]
+id = 1
+description = "Deduplicate, filter, and enrich raw items with Claude-generated summaries, tags, and promoted metadata fields"
+inputs = ["raw-collection"]
+outputs = ["curated-collection"]
+tools = []  # Claude synthesis: reads raw collection, produces curated JSON
+entry_point = true
+model = "claude-sonnet-4-6"
+
+[phases.concept_extraction]
+id = 2
+description = "Extract and organize key concepts, themes, relationships, and knowledge gaps from curated research"
+inputs = ["curated-collection"]
+outputs = ["knowledge-overview"]
+tools = ["cc_load_collection", "cc_query", "cc_get_items", "cc_collect_concepts", "cc_save_overview"]
+entry_point = true
+optional = true
+model = "claude-sonnet-4-6"
+
+[phases.codebase_analysis]
+id = "C"
+description = "Analyze an existing package codebase to extract implementation requirements, conventions, and integration constraints from AGENTS.md, CLAUDE.md, package manifests, and directory structure"
+inputs = ["codebase-path"]
+outputs = ["codebase-requirements"]
+tools = []  # Agent reads filesystem directly
+entry_point = true
+optional = true
+model = "claude-sonnet-4-6"
+
+[phases.design_synthesis]
+id = 3
+description = "Synthesize curated research and/or concept overviews into structured implementation specs, optionally constrained by codebase requirements and informed by knowledge base queries"
+inputs = ["curated-collection", "knowledge-overview", "codebase-requirements"]
+input_mode = "any"  # requires at least one of curated-collection or knowledge-overview; codebase-requirements is optional
+outputs = ["design-spec"]
+tools = [
+  "synth_load_collection", "synth_query", "synth_get_items",
+  "synth_create_spec", "synth_save_spec",
+  "kb_search", "kb_sql_query",
+]
+entry_point = true
+model = "claude-opus-4-6"
+
+[phases.debate]
+id = "D"
+description = "Adversarial multi-agent review that stress-tests an artifact through structured argumentation with divergent analysis followed by convergent synthesis"
+inputs = ["knowledge-overview", "design-spec", "codebase-requirements"]
+input_mode = "one_of_primary"  # accepts exactly one of knowledge-overview or design-spec per invocation; codebase-requirements is optional context
+outputs = ["debate-transcript"]
+tools = ["kb_search", "kb_sql_query"]  # agents can query KBs during debate
+reusable = true
+entry_point = false
+optional = true
+model = "claude-opus-4-6"
+
+[phases.validation]
+id = 4
+description = "Verify spec claims against real API docs, platform constraints, legal requirements, and optionally codebase requirements"
+inputs = ["design-spec", "codebase-requirements"]
+input_mode = "required_optional"  # design-spec required, codebase-requirements optional
+outputs = ["validation-report", "design-spec", "research-manifest"]
+output_mode = "conditional"  # always produces validation-report; additionally updates design-spec normally, or emits research-manifest if knowledge gaps found
+tools = ["WebFetch", "Firecrawl", "Grep", "kb_search", "kb_sql_query"]
+entry_point = true
+model = "claude-sonnet-4-6"
+
+[phases.implementation_scaffold]
+id = 5
+description = "Create project repos, AGENTS.md, roadmaps, and scheduled development triggers following codebase conventions when available"
+inputs = ["design-spec", "codebase-requirements"]
+input_mode = "required_optional"  # design-spec required, codebase-requirements optional
+outputs = []  # terminal phase: produces external artifacts (repos, files, triggers)
+tools = [
+  "github_create_repository", "github_push_files",
+  "Write", "RemoteTrigger",
+  "kb_search", "kb_sql_query",
+]
+entry_point = true
+model = "claude-opus-4-6"
+
+# ── DAG Edges ───────────────────────────────────────────────
+
+# Document ingestion paths
+[[edges]]
+from = "document_ingestion"
+to = "curation"
+note = "Documents only, skip discovery"
+
+[[edges]]
+from = "document_ingestion"
+to = "research_discovery"
+note = "Augment: analyze ingested docs, auto-generate manifest, discover additional sources"
+
+# Discovery and curation
+[[edges]]
+from = "research_discovery"
+to = "curation"
+
+# Curation to downstream
+[[edges]]
+from = "curation"
+to = "concept_extraction"
+
+[[edges]]
+from = "curation"
+to = "design_synthesis"
+note = "Skip concept extraction when synthesizing directly from research"
+
+# Concept extraction paths
+[[edges]]
+from = "concept_extraction"
+to = "debate"
+input_as = "knowledge-overview"
+
+[[edges]]
+from = "concept_extraction"
+to = "design_synthesis"
+note = "Skip concept debate"
+
+# Concept debate to synthesis
+[[edges]]
+from = "debate"
+to = "design_synthesis"
+when_input = "knowledge-overview"
+
+# Codebase analysis feeds downstream phases (all optional)
+[[edges]]
+from = "codebase_analysis"
+to = "design_synthesis"
+optional = true
+note = "Constrains spec to match existing codebase patterns"
+
+[[edges]]
+from = "codebase_analysis"
+to = "debate"
+optional = true
+note = "Debate agents can argue about codebase conformance"
+
+[[edges]]
+from = "codebase_analysis"
+to = "validation"
+optional = true
+note = "Validate spec against codebase requirements"
+
+[[edges]]
+from = "codebase_analysis"
+to = "implementation_scaffold"
+optional = true
+note = "Scaffold follows existing codebase conventions"
+
+# Synthesis to debate or validation
+[[edges]]
+from = "design_synthesis"
+to = "debate"
+input_as = "design-spec"
+
+[[edges]]
+from = "design_synthesis"
+to = "validation"
+note = "Skip spec debate"
+
+# Spec debate to validation
+[[edges]]
+from = "debate"
+to = "validation"
+when_input = "design-spec"
+
+# Validation feedback loops
+[[edges]]
+from = "validation"
+to = "design_synthesis"
+note = "Refinement loop: spec needs changes based on validation findings"
+
+[[edges]]
+from = "validation"
+to = "research_discovery"
+note = "Knowledge gaps found: need additional research"
+
+# Validation to implementation
+[[edges]]
+from = "validation"
+to = "implementation_scaffold"
+
+# ── Debate Configuration ────────────────────────────────────
+
+[debate.agents.advocate]
+role = "Defends current artifact decisions with evidence from source material"
+runs_in = "round_1"
+
+[debate.agents.critic]
+role = "Challenges assumptions, identifies weaknesses, proposes concrete alternatives"
+runs_in = "round_1"
+
+[debate.agents.risk_specialist]
+role = "Evaluates risk models, failure modes, worst-case scenarios, and mitigation adequacy"
+runs_in = "round_1"
+
+[debate.agents.domain_specialist]
+role = "Brings domain-specific knowledge: market structure, API constraints, regulatory, operational"
+runs_in = "round_1"
+
+[debate.agents.synthesizer]
+role = "Evaluates all round 1 arguments, resolves conflicts, produces refined artifact with change rationale"
+runs_in = "round_2"
+depends_on = ["advocate", "critic", "risk_specialist", "domain_specialist"]
+
+[debate.rounds]
+round_1 = "divergent"   # advocate, critic, risk_specialist, domain_specialist run in parallel
+round_2 = "convergent"  # synthesizer reads all round 1 outputs, produces refined artifact
+
+[debate.output]
+includes_transcript = true
+includes_refined_artifact = true
+artifact_version_bump = "minor"  # refined artifact gets version increment
+
+# ── Knowledge Base Configuration (Defaults) ─────────────────
+# Per-run overrides live in the pipeline-run config.
+# These are pipeline-level defaults.
+
+[knowledge_bases]
+available_in = ["design_synthesis", "debate", "validation", "implementation_scaffold"]
+max_queries_per_phase = 20
+query_mode = "proactive"  # proactive | on_demand
+
+
+# ── Schema References ───────────────────────────────────────
+
+[schemas]
+pipeline_run = "schemas/pipeline-run.json"
+research_manifest = "schemas/research-manifest.json"
+raw_collection = "schemas/raw-collection.json"
+curated_collection = "schemas/curated-collection.json"
+knowledge_overview = "schemas/knowledge-overview.json"
+design_spec = "schemas/design-spec.json"
+codebase_requirements = "schemas/codebase-requirements.json"
+debate_transcript = "schemas/debate-transcript.json"
+kb_query_log = "schemas/kb-query-log.json"
+
+# ── Artifact Storage ────────────────────────────────────────
+
+[storage]
+base_dir = "pipeline_mcp_data"
+
+[storage.paths]
+runs = "runs"
+manifests = "manifests"
+raw_collections = "collections/raw"
+curated_collections = "collections/curated"
+overviews = "overviews"
+specs = "specs"
+debates = "debates"
+codebase = "codebase"
+bm25_indices = "kb/bm25"      # WARM lexical (local BM25 over pipeline collections)
+vector_indices = "kb/vectors" # COLD vector — pointer to the OS second_brain store
+                              # at /data/vault/index; this plugin NEVER writes here.
+
+
+# ── Lifecycle Hooks ─────────────────────────────────────────
+# Lifecycle hooks for the pipeline-orchestrator TypeScript layer (NOT the
+# Claude Code harness hooks in hooks/hooks-config.toml, which are a separate
+# system). Each [[hooks]] entry is loaded by loadHooksConfig() and consumed
+# by runHooks / runPrePipelineInitHooks in hooks.ts.
+#
+# To enable the pre_pipeline_init example hook, uncomment the block below.
+# The example script is intentionally disabled by default so that existing
+# pipeline_init_run calls do not change behavior unless a user opts in.
+#
+# [[hooks]]
+# trigger = "pre_pipeline_init"
+# command = "hooks/pre-pipeline-init.example.js"
+# timeout_ms = 5000
+#
+# To enable Feature B per-phase subagent execution, uncomment the block below.
+# When enabled, every pipeline_start_phase call will fire this hook, which
+# emits an agent_directive telling the MCP client to spawn a general-purpose
+# Agent subagent with the precedence-resolved model. The subagent owns
+# pipeline_complete_phase / pipeline_fail_phase for the phase.
+#
+# [[hooks]]
+# trigger = "pre_start"
+# phase_filter = "*"
+# command = "hooks/pre-phase-start.example.js"
+# timeout_ms = 10000

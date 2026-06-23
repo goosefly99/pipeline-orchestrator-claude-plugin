@@ -1,0 +1,50 @@
+# Claude Code Hooks Configuration
+# Each hook can be independently enabled/disabled.
+# Run generate-settings.mjs to apply changes to .claude/settings.local.json
+
+[master]
+enabled = true
+
+[run]
+id = ""          # Leave empty to auto-detect from pipeline_mcp_data/runs/
+label = "dev"    # Label for A/B comparison (e.g., "baseline", "with-guards")
+
+[session_start_clear]
+enabled = true
+
+[send_message_guard]
+enabled = false
+mode = "ask"     # "allow" | "deny" | "ask"
+deny_reason = "SendMessage requires explicit approval during pipeline execution."
+
+[token_budget_guard]
+enabled = true
+max_extra_usage_usd = 5.00
+warn_at_pct = 80
+
+[phase_session_isolation]
+enabled = true
+warn_only = true
+
+[dag_guard]
+enabled = true
+
+[artifact_gate]
+enabled = true
+
+[file_read_version_guard]
+enabled = false
+present_version_in_development = "v0.4.0"
+previous_versions = ["v0.3.0", "v0.2.0"]
+
+[post_phase_complete]
+enabled = true
+
+[phase_context_inject]
+enabled = true
+
+[phase_timing]
+enabled = true
+
+[stop_guard]
+enabled = true

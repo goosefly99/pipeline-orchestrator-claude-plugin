@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "raw-collection.json",
+  "title": "Raw Collection",
+  "description": "Unprocessed research collection produced by Phase 0 (Research Discovery) or Phase I (Document Ingestion). Contains all discovered items before curation. Items may be duplicative, lack summaries, and have unassigned tags. Includes an audit trail of source runs.",
+  "type": "object",
+  "required": ["collection_id", "created_date", "status", "items"],
+  "properties": {
+    "collection_id": {
+      "type": "string",
+      "description": "Unique identifier: {manifest_id_or_ingest_name}--{8char_uuid}"
+    },
+    "manifest_id": {
+      "type": "string",
+      "description": "ID of the research manifest that produced this collection (empty for document ingestion)"
+    },
+    "created_date": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "type": "string",
+      "const": "raw"
+    },
+    "source_runs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/SourceRun" },
+      "description": "Audit trail of each source that was queried during discovery"
+    },
+    "items": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/RawItem" }
+    }
+  },
+  "$defs": {
+    "SourceRun": {
+      "type": "object",
+      "required": ["source_type", "executed_at", "items_found", "items_stored"],
+      "properties": {
+        "source_type": {
+          "type": "string",
+          "enum": ["x_bookmarks", "x_search", "x_user_tweets", "x_thread", "x_article", "web", "local_file", "local_ingest", "api"],
+          "description": "Which source type produced these items"
+        },
+        "query": {
+          "type": "string",
+          "description": "Search query or URL that was executed"
+        },
+        "url": {
+          "type": "string",
+          "description": "URL that was fetched (for web sources)"
+        },
+        "path": {
+          "type": "string",
+          "description": "File path that was ingested (for local sources)"
+        },
+        "executed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "items_found": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "items_stored": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "RawItem": {
+      "type": "object",
+      "required": ["id", "source_type", "content"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique item ID, prefixed by source type (e.g., 'x_2039746395100377447', 'web_a1b2c3d4', 'local_filename')"
+        },
+        "source_type": {
+          "type": "string"
+        },
+        "source_ref": {
+          "type": "string",
+          "description": "Source-specific reference (e.g., 'tweet_id:123', 'url:https://...', 'file:path/to/doc.pdf')"
+        },
+        "title": {
+          "type": "string",
+          "default": "",
+          "description": "Title if available from source; may be empty for raw items"
+        },
+        "content": {
+          "type": "string",
+          "description": "Full text content extracted from the source"
+        },
+        "url": {
+          "type": "string",
+          "description": "Source URL if applicable"
+        },
+        "date": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Publication or creation date if available"
+        },
+        "author": {
+          "$ref": "#/$defs/Author"
+        },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Tags from source (e.g., hashtags from X); may be empty"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "All source-specific fields not captured by primary fields (engagement metrics, embedded content, etc.)"
+        }
+      }
+    },
+    "Author": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "handle": { "type": "string" },
+        "bio": { "type": "string" }
+      }
+    }
+  }
+}

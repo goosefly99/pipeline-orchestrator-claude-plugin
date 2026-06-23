@@ -1,0 +1,56 @@
+# Quality Gates Configuration
+# Each [[gates]] entry defines checks to run when completing a phase.
+# on_failure = "block" reverts phase status and removes artifacts on failure.
+# on_failure = "warn" logs warnings but allows completion to proceed.
+
+[[gates]]
+phase = "curation"
+on_failure = "block"
+
+[[gates.checks]]
+check_type = "field_present"
+description = "Curated collection must include sources"
+[gates.checks.params]
+field = "sources"
+artifact_type = "curated-collection"
+
+[[gates.checks]]
+check_type = "min_items"
+description = "Curated collection must have at least 1 item"
+[gates.checks.params]
+field = "items"
+min = 1
+artifact_type = "curated-collection"
+
+[[gates]]
+phase = "design_synthesis"
+on_failure = "block"
+
+[[gates.checks]]
+check_type = "field_present"
+description = "Design spec must include components"
+[gates.checks.params]
+field = "architecture.components"
+artifact_type = "design-spec"
+
+[[gates]]
+phase = "concept_extraction"
+on_failure = "warn"
+
+[[gates.checks]]
+check_type = "field_present"
+description = "Concept overview must include concepts"
+[gates.checks.params]
+field = "concepts"
+artifact_type = "knowledge-overview"  # was: concept-overview (stale)
+
+[[gates]]
+phase = "validation"
+on_failure = "block"
+
+[[gates.checks]]
+check_type = "field_present"
+description = "Validation report must include results"
+[gates.checks.params]
+field = "results"
+artifact_type = "validation-report"

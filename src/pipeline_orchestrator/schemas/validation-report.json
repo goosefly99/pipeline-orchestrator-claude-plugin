@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "validation-report.json",
+  "title": "Validation Report",
+  "description": "Report produced by the validation phase that captures per-check results for claims the design spec makes about API surfaces, platform constraints, and codebase assumptions; expected to contain a 'results' array of per-check findings and an 'overall_status' summary.",
+  "type": "object",
+  "required": ["report_id", "spec_id", "phase", "validated_date", "results", "overall_status"],
+  "properties": {
+    "report_id": {
+      "type": "string"
+    },
+    "spec_id": {
+      "type": "string"
+    },
+    "phase": {
+      "type": "string",
+      "description": "Source phase name. Typically 'validation'."
+    },
+    "validated_date": {
+      "type": "string",
+      "description": "ISO-8601 date or datetime when the report was generated."
+    },
+    "results": {
+      "type": "array",
+      "description": "Per-check validation findings",
+      "items": { "$ref": "#/$defs/ValidationCheckResult" }
+    },
+    "overall_status": {
+      "type": "string",
+      "description": "Aggregate status across all checks (e.g. PASS, FAIL, GATE-FRICTION)"
+    },
+    "spec_errors_found": {
+      "type": "array",
+      "items": { "type": "object" },
+      "description": "Structured list of spec errors surfaced during validation. Empty when the spec is clean."
+    },
+    "validated_spec_path": {
+      "type": "string",
+      "description": "Repository-relative path to the validated spec file"
+    }
+  },
+  "$defs": {
+    "ValidationCheckResult": {
+      "type": "object",
+      "required": ["check_id", "status"],
+      "properties": {
+        "check_id": { "type": "string" },
+        "claim": { "type": "string" },
+        "file": { "type": ["string", "null"] },
+        "line": { "type": ["integer", "null"] },
+        "status": { "type": "string" },
+        "evidence": { "type": "string" }
+      }
+    }
+  }
+}

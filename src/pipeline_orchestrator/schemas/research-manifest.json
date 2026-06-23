@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "research-manifest.json",
+  "title": "Research Manifest",
+  "description": "Defines what to search, where to search, and curation hints for the research discovery phase. Supports both explicit sources (known URLs, accounts, files) and query-driven discovery (search terms that fan out across enabled source types). The manifest is the reproducible record of a research run.",
+  "type": "object",
+  "required": ["manifest"],
+  "properties": {
+    "manifest": {
+      "type": "object",
+      "required": ["id", "topic"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for this manifest",
+          "pattern": "^[a-z0-9][a-z0-9\\-]*$"
+        },
+        "topic": {
+          "type": "string",
+          "description": "Human-readable description of the research topic"
+        },
+        "created": {
+          "type": "string",
+          "format": "date"
+        },
+        "discovery": {
+          "type": "object",
+          "properties": {
+            "max_items_per_source": {
+              "type": "integer",
+              "default": 100,
+              "minimum": 1
+            },
+            "deduplicate": {
+              "type": "boolean",
+              "default": true
+            },
+            "deduplicate_threshold": {
+              "type": "number",
+              "default": 0.85,
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Cosine similarity threshold for near-duplicate detection"
+            }
+          }
+        },
+        "sources": {
+          "$ref": "#/$defs/ExplicitSources"
+        },
+        "discovery_queries": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/DiscoveryQuery" },
+          "description": "Query-driven discovery: search terms that fan out across enabled source types"
+        },
+        "curation": {
+          "$ref": "#/$defs/CurationHints"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "ExplicitSources": {
+      "type": "object",
+      "description": "Explicit, known sources to collect from",
+      "properties": {
+        "x_bookmarks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "description": { "type": "string" },
+              "max_results": { "type": "integer", "default": 100 }
+            }
+          }
+        },
+        "x_search": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["query"],
+            "properties": {
+              "query": { "type": "string" },
+              "max_results": { "type": "integer", "default": 50 }
+            }
+          }
+        },
+        "x_users": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["username"],
+            "properties": {
+              "username": { "type": "string" },
+              "max_results": { "type": "integer", "default": 20 }
+            }
+          }
+        },
+        "web": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["url"],
+            "properties": {
+              "url": { "type": "string", "format": "uri" },
+              "description": { "type": "string" }
+            }
+          }
+        },
+        "local_files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path"],
+            "properties": {
+              "path": { "type": "string" },
+              "description": { "type": "string" }
+            }
+          }
+        },
+        "api": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "query"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "API provider name (e.g., 'arxiv', 'semantic_scholar', 'fred')"
+              },
+              "query": { "type": "string" },
+              "endpoint": { "type": "string", "format": "uri" },
+              "max_results": { "type": "integer", "default": 20 }
+            }
+          }
+        }
+      }
+    },
+    "DiscoveryQuery": {
+      "type": "object",
+      "required": ["query"],
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Search term to fan out across enabled sources"
+        },
+        "search_x": { "type": "boolean", "default": true },
+        "search_web": { "type": "boolean", "default": true },
+        "search_arxiv": { "type": "boolean", "default": false },
+        "max_results_per_source": { "type": "integer", "default": 25 }
+      }
+    },
+    "CurationHints": {
+      "type": "object",
+      "description": "Hints applied during the curation phase (Phase 1). Travel with the manifest so curation knows how to filter and enrich without separate configuration.",
+      "properties": {
+        "required_tags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Items must have at least one of these tags to pass curation (empty = no filter)"
+        },
+        "exclude_tags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Items with any of these tags are excluded"
+        },
+        "min_content_length": {
+          "type": "integer",
+          "default": 50,
+          "description": "Minimum character count for item content"
+        },
+        "enrich_with_summaries": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether Claude should generate summaries for each item"
+        },
+        "enrich_with_tags": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether Claude should assign tags based on content analysis"
+        },
+        "metadata_fields": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Domain-specific metadata fields for Claude to extract (e.g., 'strategy_type', 'platform', 'instrument', 'dependencies')"
+        }
+      }
+    }
+  }
+}

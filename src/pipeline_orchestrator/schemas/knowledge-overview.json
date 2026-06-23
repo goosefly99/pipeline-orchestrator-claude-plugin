@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "knowledge-overview.json",
+  "title": "Knowledge Overview",
+  "description": "Structured knowledge base overview produced by Phase 2 (Concept Extraction). Contains extracted concepts with relationships, thematic groupings, key findings, knowledge gaps, and open questions. Extracted from the existing KnowledgeOverview TypeScript interface in concepts-collector/types.ts.",
+  "type": "object",
+  "required": ["overview_id", "title", "created_date", "status", "sources", "summary", "concepts", "themes"],
+  "properties": {
+    "overview_id": {
+      "type": "string",
+      "description": "Unique identifier (8-character hex)"
+    },
+    "title": {
+      "type": "string",
+      "description": "Descriptive title for the knowledge overview"
+    },
+    "created_date": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["draft", "complete"],
+      "description": "Draft during extraction, complete after Claude fills in the template"
+    },
+    "sources": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/OverviewSource" },
+      "description": "Research items that contributed to this overview"
+    },
+    "summary": {
+      "type": "string",
+      "description": "Executive summary synthesizing all source material"
+    },
+    "concepts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Concept" }
+    },
+    "themes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Theme" }
+    },
+    "key_findings": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Actionable insights derived from the analysis"
+    },
+    "knowledge_gaps": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Areas where available research is insufficient or contradictory"
+    },
+    "open_questions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Questions worth investigating that emerged from the analysis"
+    }
+  },
+  "$defs": {
+    "OverviewSource": {
+      "type": "object",
+      "required": ["collection", "item_id", "title"],
+      "properties": {
+        "collection": { "type": "string" },
+        "item_id": { "type": "string" },
+        "title": { "type": "string" }
+      }
+    },
+    "Concept": {
+      "type": "object",
+      "required": ["name", "category", "description", "key_details", "source_items", "relationships"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Clear, specific name for the concept"
+        },
+        "category": {
+          "type": "string",
+          "description": "Broad category (e.g., 'strategy', 'technique', 'architecture', 'data source', 'risk management')"
+        },
+        "description": {
+          "type": "string",
+          "description": "What this concept is and why it matters"
+        },
+        "key_details": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Specific details, numbers, parameters, or implementation notes"
+        },
+        "source_items": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Item IDs from the source collection that contributed to this concept"
+        },
+        "relationships": {
+          "oneOf": [
+            {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Simple string descriptions of relationships to other concepts"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["concept", "relationship"],
+                "properties": {
+                  "concept": { "type": "string" },
+                  "relationship": { "type": "string" }
+                }
+              },
+              "description": "Structured relationship objects with target concept and relationship type"
+            }
+          ],
+          "description": "How this concept relates to others in the overview. Supports both string and structured formats."
+        }
+      }
+    },
+    "Theme": {
+      "type": "object",
+      "required": ["name", "description", "concept_names"],
+      "properties": {
+        "name": { "type": "string" },
+        "description": {
+          "type": "string",
+          "description": "What unifies the concepts in this theme"
+        },
+        "concept_names": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Names of concepts belonging to this theme"
+        }
+      }
+    }
+  }
+}
