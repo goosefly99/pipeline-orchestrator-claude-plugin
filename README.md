@@ -31,7 +31,7 @@ npm install
 
 ## Configuration
 
-The server registers itself via `.mcp.json` and is launched through `start.py`, a Python entrypoint that verifies the Node dependencies required by the TypeScript MCP core and then `exec`s `server.ts` directly. `start.mjs` remains available as the Node fallback for manual local use. No environment variables are required.
+The server registers itself via `.mcp.json` and is launched through `start.py`, a Python entrypoint that ensures Node dependencies are available and then `exec`s `server.ts` directly. In the container, `start.py` uses pre-baked `node_modules` from the image (offline, no network required); outside the container it falls back to `npm ci --prefer-offline`. No environment variables are required.
 
 Configuration files:
 

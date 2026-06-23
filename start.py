@@ -4,6 +4,13 @@
 The orchestration core is still the TypeScript server. This launcher makes the
 plugin install/start path Python-native while preserving stdio behavior by
 `exec`-ing the existing Node process after dependency checks.
+
+Cold-start priority (in order):
+  1. Local node_modules sentinels present  -> ensure zod shim -> execv node
+  2. Baked deps dir available (PIPELINE_NODE_MODULES_BAKED env, default
+     /opt/agentic-os/pipeline-node-modules) and contains node_modules ->
+     symlink (or copy) into plugin root -> ensure zod shim -> execv node
+  3. Fallback: npm ci --prefer-offline -> ensure zod shim -> execv node
 """
 
 from __future__ import annotations
@@ -18,6 +25,9 @@ from typing import Iterable
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parent
+
+# Default baked-deps dir; overridable via env so tests and alt deployments work.
+BAKED_DEPS_DEFAULT = "/opt/agentic-os/pipeline-node-modules"
 
 RUNTIME_FILES = (
     Path("node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js"),
@@ -82,10 +92,42 @@ def require_executable(name: str) -> str:
     return executable
 
 
+def _baked_deps_dir() -> Path | None:
+    """Return the baked-deps directory if it exists and has node_modules."""
+    baked = Path(os.environ.get("PIPELINE_NODE_MODULES_BAKED", BAKED_DEPS_DEFAULT))
+    if baked.is_dir() and (baked / "node_modules").is_dir():
+        return baked
+    return None
+
+
+def _wire_baked_deps(plugin_root: Path, baked: Path) -> None:
+    """Symlink (preferred) or copy node_modules from the baked dir into plugin_root."""
+    target = plugin_root / "node_modules"
+    source = baked / "node_modules"
+    if target.exists() or target.is_symlink():
+        # Already wired (e.g. from a previous start) — nothing to do.
+        return
+    try:
+        target.symlink_to(source)
+        print(
+            f"[pipeline-orchestrator] using baked node_modules (offline): {source} -> {target}",
+            file=sys.stderr,
+        )
+    except OSError:
+        # Fallback: copy (e.g. cross-device, Windows without symlink privilege).
+        print(
+            f"[pipeline-orchestrator] symlink failed, copying baked node_modules from {source}",
+            file=sys.stderr,
+        )
+        shutil.copytree(str(source), str(target))
+
+
 def install_dependencies(plugin_root: Path) -> None:
-    """Install the Node dependencies needed by the TypeScript core."""
+    """Install the Node dependencies needed by the TypeScript core (online fallback)."""
     npm = require_executable("npm")
-    command = [npm, "ci", "--silent", "--no-audit", "--no-fund"]
+    # --prefer-offline uses the npm cache when possible, reducing network dependency.
+    command = [npm, "ci", "--prefer-offline", "--no-audit", "--no-fund"]
+    print("[pipeline-orchestrator] npm ci fallback (no baked deps found)", file=sys.stderr)
     try:
         subprocess.run(command, cwd=plugin_root, check=True)
     except subprocess.CalledProcessError as exc:
@@ -106,9 +148,20 @@ def ensure_zod_package_manifest(plugin_root: Path) -> None:
 
 
 def ensure_runtime(plugin_root: Path) -> None:
-    if missing_runtime_files(plugin_root):
-        print("[pipeline-orchestrator] Installing dependencies...", file=sys.stderr)
+    """Ensure node_modules are available via the fastest applicable path."""
+    if not missing_runtime_files(plugin_root):
+        # Fast path: sentinels already present (local install or previously wired).
+        ensure_zod_package_manifest(plugin_root)
+        return
+
+    baked = _baked_deps_dir()
+    if baked is not None:
+        # Container path: wire in the image-baked node_modules without network.
+        _wire_baked_deps(plugin_root, baked)
+    else:
+        # Dev/host fallback: install from the registry (offline-tolerant).
         install_dependencies(plugin_root)
+
     ensure_zod_package_manifest(plugin_root)
 
 
@@ -119,11 +172,13 @@ def node_server_command(plugin_root: Path) -> list[str]:
 
 def dry_run_payload(plugin_root: Path) -> dict[str, object]:
     command = node_server_command(plugin_root)
+    baked = _baked_deps_dir()
     return {
         "plugin_root": str(plugin_root),
         "runtime": "python-launcher-node-core",
         "command": command,
         "missing_runtime_files": [str(path) for path in missing_runtime_files(plugin_root)],
+        "baked_deps_dir": str(baked) if baked is not None else None,
     }
 
 

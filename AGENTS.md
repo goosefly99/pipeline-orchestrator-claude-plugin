@@ -258,7 +258,7 @@ Each parser (`parsePackageJson`, `parsePyprojectToml`, `parseCargoToml`, `parseG
 
 ## Type Checking
 
-`tsconfig.json` at project root configures `tsc --noEmit` (Node runs `.ts` files directly via native type stripping — never compile to JavaScript). Settings: ES2022, NodeNext, strict, `allowImportingTsExtensions: true`. The plugin MCP entrypoint is `start.py`, which performs the dependency bootstrap in Python and then execs the TypeScript core; `start.mjs` is retained as a Node fallback for manual use. Run `npm run typecheck` before commits.
+`tsconfig.json` at project root configures `tsc --noEmit` (Node runs `.ts` files directly via native type stripping — never compile to JavaScript). Settings: ES2022, NodeNext, strict, `allowImportingTsExtensions: true`. The plugin MCP entrypoint is `start.py`, which performs the dependency bootstrap in Python and then execs the TypeScript core. Run `npm run typecheck` before commits.
 
 The ajv/ajv-formats imports in `validator.ts` use typed casts because those packages ship CJS with dual-shape typings that don't match NodeNext default-export resolution.
 
