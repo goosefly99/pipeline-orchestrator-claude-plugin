@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "pipeline-orchestrator": {
-      "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/start.mjs"]
+      "command": "python3",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/start.py"]
     }
   }
 }

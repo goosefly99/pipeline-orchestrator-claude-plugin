@@ -18,23 +18,20 @@ Key tool groups (~40 tools total, all prefixed `pipeline_`):
 
 ## Installation
 
-Inside Claude Code:
+Inside agentic-os, this plugin ships from the local
+`agentic-os-vendored-plugins` marketplace and the vendored submodule at
+`os/plugins/pipeline-orchestrator`.
+
+For local development, work in that submodule directory directly:
 
 ```
-/plugin install goosefly99/pipeline-orchestrator-claude-plugin
-```
-
-Or clone manually:
-
-```
-git clone https://github.com/goosefly99/pipeline-orchestrator-claude-plugin.git
-cd pipeline-orchestrator-claude-plugin
+cd os/plugins/pipeline-orchestrator
 npm install
 ```
 
 ## Configuration
 
-The server registers itself via `.mcp.json` and is launched through `start.mjs`, which lazily runs `npm install` on first start. No environment variables are required.
+The server registers itself via `.mcp.json` and is launched through `start.py`, a Python entrypoint that verifies the Node dependencies required by the TypeScript MCP core and then `exec`s `server.ts` directly. `start.mjs` remains available as the Node fallback for manual local use. No environment variables are required.
 
 Configuration files:
 
