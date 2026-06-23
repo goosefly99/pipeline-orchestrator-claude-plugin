@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pipeline-orchestrator"
+version = "1.0.0"
+description = "Pipeline orchestrator MCP server — reads pipeline.toml, resolves the typed DAG, validates artifacts, manages run state, and coordinates research/debate/synth phases"
+requires-python = ">=3.11"
+authors = [{ name = "olive" }]
+dependencies = [
+    "mcp>=1.0,<2",
+    "jsonschema[format-nongpl]",
+    "structlog",
+    "httpx",
+]
+
+[project.optional-dependencies]
+pdf = ["pypdf"]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "mypy",
+    "ruff",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pipeline_orchestrator"]
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+files = ["src", "tests"]
+# tests/test_start_py.py is Node-tree baggage (imports the root start.py
+# launcher); T0.2 relocates it into legacy-node/. Out of the Python port surface.
+exclude = "tests/test_start_py\\.py$"
+
+[[tool.mypy.overrides]]
+module = ["pypdf.*", "jsonschema.*"]
+ignore_missing_imports = true
+
+[tool.ruff]
+target-version = "py311"
+src = ["src", "tests"]
+# start.py + tests/test_start_py.py are the OLD Node launcher and its test; they
+# are Node-tree baggage that T0.2 relocates verbatim into legacy-node/. They are
+# NOT part of the pure-Python port surface, so they are excluded from the Python
+# gate (ruff/mypy/pytest) until T0.2 moves them out of root. Remove these
+# exclusions after T0.2.
+extend-exclude = ["start.py", "tests/test_start_py.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# See the ruff extend-exclude note above: test_start_py.py belongs to the Node
+# tree (it imports the root start.py launcher) and is relocated by T0.2. It
+# passes 4/4 in isolation, but is out of the pure-Python port surface for T0.1.
+addopts = ["--ignore=tests/test_start_py.py"]

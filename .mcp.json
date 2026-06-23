@@ -1,8 +1,15 @@
 {
   "mcpServers": {
     "pipeline-orchestrator": {
-      "command": "python3",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/start.py"]
+      "command": "uv",
+      "args": ["run", "--directory", "${CLAUDE_PLUGIN_ROOT}", "python", "-m", "pipeline_orchestrator"],
+      "env": {
+        "SECOND_BRAIN_INDEX_PATH": "${SECOND_BRAIN_INDEX_PATH}",
+        "SECOND_BRAIN_EMBEDDER_VERSION": "${SECOND_BRAIN_EMBEDDER_VERSION}",
+        "SECOND_BRAIN_ENABLED": "${SECOND_BRAIN_ENABLED}",
+        "SECOND_BRAIN_PYTHON": "${SECOND_BRAIN_PYTHON}",
+        "AGENTIC_OS_DATA": "${AGENTIC_OS_DATA}"
+      }
     }
   }
 }

@@ -2,3 +2,13 @@ node_modules/
 hooks/runtime-config.json
 hooks/hook-logs/
 pipeline_mcp_data/
+
+# Python (pure-Python FastMCP port — added in T0.1)
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.env
