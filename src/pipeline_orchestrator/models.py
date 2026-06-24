@@ -320,3 +320,96 @@ class HookConfig:
     phase_filter: str = "*"
     args: list[str] = field(default_factory=list)
     timeout_ms: int = 5000
+
+
+# ── Concept-collector data shapes (cc-types.ts → models.py, spec §3.3) ───
+#
+# Folds the `cc-types.ts` "Knowledge base concepts" / "Overview output" shapes
+# into models.py. `ResearchItem` / `ResearchCollection` / `FieldMap` already
+# live in `collections_store.py` (the shared store) — import/reuse those rather
+# than redefining here. These dataclasses mirror the TS interfaces
+# field-for-field: required arrays default via `field(default_factory=list)`
+# matching the Node object literals; the `?:`-style fields carry their defaults.
+
+OverviewStatus = Literal["draft", "complete"]
+"""``cc-types.ts`` ``OverviewStatus`` union — an overview is ``draft`` until saved."""
+
+
+@dataclass
+class Concept:
+    """A single extracted concept (mirrors TS ``Concept``).
+
+    All six fields are required in the TS interface; the four arrays default to
+    empty lists so the blank-template construction in ``concepts.py`` and the
+    test fixtures can omit them, matching the Node object literals.
+    """
+
+    name: str = ""
+    category: str = ""
+    description: str = ""
+    key_details: list[str] = field(default_factory=list)
+    source_items: list[str] = field(default_factory=list)
+    relationships: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Theme:
+    """A theme grouping related concepts (mirrors TS ``Theme``).
+
+    The unifying field is ``concept_names`` (an array of concept-name strings) —
+    deliberately **not** ``concepts`` (R4 §1 / the cc parity tests pin this).
+    """
+
+    name: str = ""
+    description: str = ""
+    concept_names: list[str] = field(default_factory=list)
+
+
+@dataclass
+class OverviewSource:
+    """A source-item reference inside an overview (mirrors TS ``OverviewSource``)."""
+
+    collection: str
+    item_id: str
+    title: str
+
+
+@dataclass
+class KnowledgeOverview:
+    """A structured knowledge overview (mirrors TS ``KnowledgeOverview``).
+
+    Required scalars (``overview_id`` / ``title`` / ``created_date`` /
+    ``status`` / ``summary``) come first; the required arrays default to empty
+    lists (matching the Node object literals filled by ``collectConcepts`` and
+    the test ``makeOverview`` factory).
+    """
+
+    overview_id: str
+    title: str
+    created_date: str
+    status: OverviewStatus
+    summary: str = ""
+    sources: list[OverviewSource] = field(default_factory=list)
+    concepts: list[Concept] = field(default_factory=list)
+    themes: list[Theme] = field(default_factory=list)
+    key_findings: list[str] = field(default_factory=list)
+    knowledge_gaps: list[str] = field(default_factory=list)
+    open_questions: list[str] = field(default_factory=list)
+
+
+# ── Handler wire shape (types.ts ``HandlerResponse`` → models.py, §4.2) ──
+
+
+@dataclass
+class HandlerResponse:
+    """The wire shape every cc/synth handler returns (mirrors TS ``HandlerResponse``).
+
+    ``json`` is **always** a string — sometimes ``json.dumps(obj, indent=2)``,
+    sometimes a plain human-readable text block (the cc line-join handlers). The
+    envelope wrapper (T6.1) maps it to the MCP ``text`` content verbatim and
+    must not auto-JSON-wrap it. ``is_error`` mirrors the TS optional
+    ``isError?: boolean`` (default ``False``).
+    """
+
+    json: str
+    is_error: bool = False
