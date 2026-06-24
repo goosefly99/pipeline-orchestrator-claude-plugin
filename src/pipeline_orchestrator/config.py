@@ -18,6 +18,11 @@ from __future__ import annotations
 
 import functools
 import os
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pipeline_orchestrator.models import PipelineConfig
 
 
 class ConfigError(Exception):
@@ -93,6 +98,36 @@ def synth_output_dir() -> str | None:
     return os.environ.get("SYNTH_OUTPUT_DIR")
 
 
+# ---------------------------------------------------------------------------
+# §10.1 bundled pipeline config — lazy + process-cached (same idiom as above).
+# The parsed ``pipeline.toml`` is read on first call only, never at import time,
+# so the MCP handshake resolves no config (spec §3.2 handshake-safety).
+# ---------------------------------------------------------------------------
+
+
+def bundled_pipeline_toml_path() -> Path:
+    """Absolute path to the package-bundled ``pipeline/pipeline.toml``.
+
+    Resolved relative to this module (``Path(__file__)``), so it is OS-agnostic
+    and independent of the process CWD.
+    """
+    return Path(__file__).resolve().parent / "pipeline" / "pipeline.toml"
+
+
+@functools.cache
+def pipeline_config() -> PipelineConfig:
+    """Parse + cache the bundled ``pipeline.toml`` (spec §10.1; lazy).
+
+    The import of :mod:`pipeline_orchestrator.toml_loader` is deferred into the
+    function body so importing :mod:`config` (e.g. while constructing the FastMCP
+    server) neither parses the TOML nor pulls in the loader/models — only the
+    first call does. One-directional: ``config`` → ``toml_loader`` → ``models``.
+    """
+    from pipeline_orchestrator.toml_loader import load_pipeline_config
+
+    return load_pipeline_config(bundled_pipeline_toml_path())
+
+
 def reset_config_cache() -> None:
     """Clear every cached reader (test seam).
 
@@ -108,5 +143,6 @@ def reset_config_cache() -> None:
         brave_api_key,
         concepts_output_dir,
         synth_output_dir,
+        pipeline_config,
     ):
         reader.cache_clear()

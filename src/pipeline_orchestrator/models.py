@@ -30,6 +30,15 @@ ModelTier = Literal["haiku", "sonnet", "opus"]
 QueryMode = Literal["proactive", "on_demand"]
 """``types.ts`` ``KBDefaults.query_mode`` union."""
 
+CheckType = Literal["field_present", "min_items", "cross_ref_valid"]
+"""``types.ts`` ``QualityCheck.check_type`` union."""
+
+OnFailure = Literal["warn", "block"]
+"""``types.ts`` ``QualityGate.on_failure`` union."""
+
+HookTrigger = Literal["pre_pipeline_init", "pre_start", "post_complete", "on_fail"]
+"""``types.ts`` ``HookTrigger`` union — the four valid lifecycle-hook triggers."""
+
 
 # ── Status literals (mirror the TS string unions in types.ts) ────────
 
@@ -253,3 +262,61 @@ class PipelineConfig:
     knowledge_bases: KBDefaults | None = None
     schemas: dict[str, str] = field(default_factory=dict)
     storage: StorageConfig | None = None
+
+
+# ── Quality gates (parsed from quality-gates.toml) ───────────────────
+#
+# Mirrors the ``types.ts`` ``QualityCheck`` / ``QualityGate`` interfaces.
+# ``toml_loader.load_quality_gates`` builds these; the gate-evaluation layer
+# (a later milestone) consumes them. ``CheckResult`` / ``GateResult`` (the
+# *run-time* evaluation outputs in ``types.ts``) are not yet needed and land
+# with that layer.
+
+
+@dataclass
+class QualityCheck:
+    """A single quality check within a gate (mirrors TS ``QualityCheck``).
+
+    ``description`` defaults to ``""`` (the Node loader's ``?? ''``); ``params``
+    is a free-form mapping defaulting to ``{}`` (the loader's ``?? {}``).
+    """
+
+    check_type: CheckType
+    description: str = ""
+    params: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass
+class QualityGate:
+    """A quality gate applied to a specific phase (mirrors TS ``QualityGate``).
+
+    ``on_failure`` defaults to ``"warn"`` (the loader's ``?? 'warn'``); ``checks``
+    is an ordered list defaulting to empty.
+    """
+
+    phase: str
+    on_failure: OnFailure = "warn"
+    checks: list[QualityCheck] = field(default_factory=list)
+
+
+# ── Lifecycle hooks (parsed from a [[hooks]] array) ──────────────────
+#
+# Mirrors the ``types.ts`` ``HookConfig`` interface. The TS ``?:`` optionals
+# (``phase_filter`` / ``args`` / ``timeout_ms``) are filled with their nullish
+# defaults by ``toml_loader.load_hooks_config`` (``'*'`` / ``[]`` / ``5000``),
+# so they are plain non-optional fields here carrying those same defaults.
+
+
+@dataclass
+class HookConfig:
+    """Configuration for a single lifecycle hook (mirrors TS ``HookConfig``).
+
+    ``phase_filter`` defaults to ``"*"``, ``args`` to ``[]``, ``timeout_ms`` to
+    ``5000`` — the same nullish defaults the loader applies.
+    """
+
+    trigger: HookTrigger
+    command: str
+    phase_filter: str = "*"
+    args: list[str] = field(default_factory=list)
+    timeout_ms: int = 5000
