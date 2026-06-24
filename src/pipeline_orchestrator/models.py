@@ -16,6 +16,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+# ── Pipeline configuration literals (mirror the TS unions in types.ts) ───
+
+InputMode = Literal["any", "one_of", "one_of_primary", "required_optional"]
+"""``types.ts`` ``PhaseDefinition.input_mode`` union (``?:`` optional → ``None``)."""
+
+OutputMode = Literal["conditional"]
+"""``types.ts`` ``PhaseDefinition.output_mode`` union (``?:`` optional → ``None``)."""
+
+ModelTier = Literal["haiku", "sonnet", "opus"]
+"""``types.ts`` ``PhaseDefinition.model_tier`` union (``?:`` optional → ``None``)."""
+
+QueryMode = Literal["proactive", "on_demand"]
+"""``types.ts`` ``KBDefaults.query_mode`` union."""
+
+
 # ── Status literals (mirror the TS string unions in types.ts) ────────
 
 PhaseStatus = Literal["pending", "in_progress", "completed", "skipped", "failed"]
@@ -111,3 +126,130 @@ class LifecycleEvent:
     run_id: str
     resolved_model: str | None = None
     details: dict[str, object] | None = None
+
+
+# ── Pipeline configuration (parsed from pipeline.toml) ───────────────
+#
+# Mirrors the ``types.ts`` config interfaces field-for-field. These live here
+# (not in ``dag.py``) so ``toml_loader.py`` (T1.5) and the dag/run-state layers
+# share one definition. The dag functions in ``dag.py`` operate on
+# :class:`PipelineConfig` / :class:`PhaseDefinition` / :class:`EdgeDefinition`.
+
+
+@dataclass
+class PhaseDefinition:
+    """A single pipeline phase (mirrors TS ``PhaseDefinition``).
+
+    ``id`` is ``number | string`` in TS (``int | str`` here). ``inputs`` /
+    ``outputs`` / ``tools`` are required arrays defaulting to empty lists (the
+    Node test's ``makeConfig`` fills them via ``?? []``). The ``?:`` optionals
+    (``input_mode`` / ``output_mode`` / ``optional`` / ``reusable`` /
+    ``model_tier`` / ``model``) default to ``None``/``False``; ``entry_point``
+    is required and defaults to ``False`` (matching ``makeConfig``'s
+    ``?? false``).
+    """
+
+    id: int | str
+    description: str = ""
+    inputs: list[str] = field(default_factory=list)
+    outputs: list[str] = field(default_factory=list)
+    tools: list[str] = field(default_factory=list)
+    entry_point: bool = False
+    input_mode: InputMode | None = None
+    output_mode: OutputMode | None = None
+    optional: bool | None = None
+    reusable: bool | None = None
+    model_tier: ModelTier | None = None
+    model: str | None = None
+
+
+@dataclass
+class EdgeDefinition:
+    """A directed DAG edge (mirrors TS ``EdgeDefinition``).
+
+    The TOML wire key is ``from`` (a Python reserved word), so the field is named
+    ``from_``; the loader/caller (e.g. T1.5 ``toml_loader``) maps the wire key
+    ``from`` onto ``from_`` when constructing edges — there is no field-metadata
+    mechanism (the field is a bare ``from_: str``). ``to`` is required; the rest
+    (``note`` / ``optional`` / ``input_as`` / ``when_input``) are the ``?:``
+    optionals.
+    """
+
+    from_: str
+    to: str
+    note: str | None = None
+    optional: bool | None = None
+    input_as: str | None = None
+    when_input: str | None = None
+
+
+@dataclass
+class PipelineMeta:
+    """The ``[pipeline]`` table (mirrors TS ``PipelineConfig.pipeline``)."""
+
+    id: str
+    version: str
+    description: str
+
+
+@dataclass
+class DebateOutputConfig:
+    """The ``debate.output`` sub-object (mirrors TS ``DebateConfig.output``)."""
+
+    includes_transcript: bool
+    includes_refined_artifact: bool
+    artifact_version_bump: str
+
+
+@dataclass
+class DebateAgentConfig:
+    """A single debate agent (mirrors the TS ``DebateConfig.agents`` value)."""
+
+    role: str
+    runs_in: str
+    depends_on: list[str] | None = None
+
+
+@dataclass
+class DebateConfig:
+    """The ``[debate]`` table (mirrors TS ``DebateConfig``)."""
+
+    agents: dict[str, DebateAgentConfig] = field(default_factory=dict)
+    rounds: dict[str, str] = field(default_factory=dict)
+    output: DebateOutputConfig | None = None
+
+
+@dataclass
+class KBDefaults:
+    """Knowledge-base defaults (mirrors TS ``KBDefaults``)."""
+
+    available_in: list[str] = field(default_factory=list)
+    max_queries_per_phase: int = 20
+    query_mode: QueryMode = "proactive"
+
+
+@dataclass
+class StorageConfig:
+    """Artifact storage layout (mirrors TS ``StorageConfig``)."""
+
+    base_dir: str = ""
+    paths: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class PipelineConfig:
+    """Top-level parsed ``pipeline.toml`` (mirrors TS ``PipelineConfig``).
+
+    ``phases`` is a ``Record<string, PhaseDefinition>`` (keyed by phase name);
+    ``edges`` is an ordered list (edge filter order is observable in
+    ``resolve_input_artifacts``). The dag functions read only ``phases`` and
+    ``edges``; the remaining fields exist for full-config parity with T1.5.
+    """
+
+    pipeline: PipelineMeta
+    phases: dict[str, PhaseDefinition] = field(default_factory=dict)
+    edges: list[EdgeDefinition] = field(default_factory=list)
+    debate: DebateConfig | None = None
+    knowledge_bases: KBDefaults | None = None
+    schemas: dict[str, str] = field(default_factory=dict)
+    storage: StorageConfig | None = None
