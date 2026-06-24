@@ -370,35 +370,29 @@ class TestGeneratePhaseBrief:
 class TestEnforceResponseSize:
     """Port of the Node ``describe('enforceResponseSize', ...)`` block.
 
-    SKIPPED: ``enforce_response_size`` is ported with artifact-handlers.ts in
-    T6.3. The bodies are written so they are ready to unskip; the not-yet-ported
-    symbol is imported inside each skipped method (never at module import time).
+    Unskipped in T6.3: ``enforce_response_size`` now lives in
+    ``pipeline_orchestrator.tools.artifact_tools``. Each method imports the symbol
+    lazily (never at module import time) so the suite stays import-clean.
     """
 
-    @pytest.mark.skip(
-        reason="enforceResponseSize lands in T6.3 (artifact-handlers.ts)"
-    )
     def test_returns_response_unchanged_when_under_limit(self) -> None:
         import importlib
         import json
 
         enforce_response_size = importlib.import_module(
-            "pipeline_orchestrator.tools.artifact_handlers"
+            "pipeline_orchestrator.tools.artifact_tools"
         ).enforce_response_size
 
         response = json.dumps({"data": "small"})
         result = enforce_response_size(response, 1000)
         assert result == response
 
-    @pytest.mark.skip(
-        reason="enforceResponseSize lands in T6.3 (artifact-handlers.ts)"
-    )
     def test_truncates_and_adds_continuation_ref_when_over_limit(self) -> None:
         import importlib
         import json
 
         enforce_response_size = importlib.import_module(
-            "pipeline_orchestrator.tools.artifact_handlers"
+            "pipeline_orchestrator.tools.artifact_tools"
         ).enforce_response_size
 
         large_response = json.dumps({"data": "x" * 1000})
@@ -412,15 +406,12 @@ class TestEnforceResponseSize:
         assert parsed["continuation_ref"]["storage_key"] == "test"
         assert parsed["continuation_ref"]["file_name"] == "test.json"
 
-    @pytest.mark.skip(
-        reason="enforceResponseSize lands in T6.3 (artifact-handlers.ts)"
-    )
     def test_truncates_with_ellipsis_when_no_continuation_ref(self) -> None:
         import importlib
         import json
 
         enforce_response_size = importlib.import_module(
-            "pipeline_orchestrator.tools.artifact_handlers"
+            "pipeline_orchestrator.tools.artifact_tools"
         ).enforce_response_size
 
         large_response = json.dumps({"data": "x" * 1000})
@@ -429,15 +420,12 @@ class TestEnforceResponseSize:
         assert "truncated" in result
         assert len(result) <= 200  # truncated + some overflow for the message
 
-    @pytest.mark.skip(
-        reason="enforceResponseSize lands in T6.3 (artifact-handlers.ts)"
-    )
     def test_reports_full_length_in_truncated_response(self) -> None:
         import importlib
         import json
 
         enforce_response_size = importlib.import_module(
-            "pipeline_orchestrator.tools.artifact_handlers"
+            "pipeline_orchestrator.tools.artifact_tools"
         ).enforce_response_size
 
         large_response = json.dumps({"data": "x" * 1000})
