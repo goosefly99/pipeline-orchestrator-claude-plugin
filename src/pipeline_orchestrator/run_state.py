@@ -7,10 +7,10 @@ initialization, the five guard-then-mutate phase transitions
 load, and crash recovery, plus the pure derivation helpers (recommended
 action, run warnings, phase-status extractors).
 
-Scope boundary (T1.2): ``compute_run_terminal_status`` /
-``finalize_run_terminal_status`` (T1.3) and ``resolve_input_artifacts`` (T1.4)
-are deliberately NOT ported here — they belong to later tasks and are exercised
-by separate test files.
+Scope boundary: ``compute_run_terminal_status`` /
+``finalize_run_terminal_status`` (T1.3) are ported here (DAG-aware
+terminal-status detection); ``resolve_input_artifacts`` (T1.4) lives in
+``dag.py`` instead. Each is exercised by its own test file.
 
 Persistence parity notes:
   * ``persist`` writes ``JSON.stringify(state, null, 2)`` — Python
@@ -30,10 +30,11 @@ import shutil
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
+from .dag import resolve_next_phases
 from .errors import ErrorClass, PipelineError
-from .models import ArtifactRef, PhaseState, RunState
+from .models import ArtifactRef, PhaseState, PipelineConfig, RunState
 from .storage import get_run_data_dir
 
 STATE_FILE = "run-state.json"
@@ -692,6 +693,88 @@ def get_in_progress_phases(state: RunState) -> list[str]:
 def get_artifact_types(state: RunState) -> list[str]:
     """Return all artifact types from ``available_artifacts`` (preserving order)."""
     return [a.type for a in state.available_artifacts]
+
+
+# ── Run terminal-status detection (DAG-aware) ───────────────────────
+
+
+def compute_run_terminal_status(
+    state: RunState, config: PipelineConfig
+) -> Literal["running", "completed", "failed"]:
+    """Determine whether the run as a whole has reached a terminal state.
+
+    Ported from ``computeRunTerminalStatus`` in ``run-state.ts``. Returns one of
+    ``'running' | 'completed' | 'failed'`` by this precedence (return at the
+    first match):
+
+    1. Any phase ``'failed'``      → ``'failed'``.
+    2. Any phase ``'in_progress'`` → ``'running'``.
+    2.5. Any terminal phase (no outgoing edges) ``'completed'`` → ``'completed'``
+         (pending feedback-loop phases are treated as effectively done), guarded
+         by every ``'pending'`` phase having at least one incoming edge.
+    3. ``resolve_next_phases`` empty → ``'completed'`` (no more forward progress
+       possible; pending phases from untaken DAG branches are treated as
+       effectively done because the DAG will never make them runnable).
+    4. otherwise                   → ``'running'``.
+
+    Note: the plan document labels the terminal success state ``'done'``, but the
+    concrete ``RunState.status`` union uses ``'completed'`` — this helper returns
+    ``'completed'`` to stay consistent with the type and
+    ``validate_run_state_integrity``.
+    """
+    phases = list(state.phases.values())
+
+    if any(p.status == "failed" for p in phases):
+        return "failed"
+    if any(p.status == "in_progress" for p in phases):
+        return "running"
+
+    # Terminal-node detection: if any phase with no outgoing DAG edges ('terminal
+    # node') has completed, the run's primary path is exhausted. Pending phases
+    # that remain reachable only via feedback loops (e.g. research_discovery via
+    # the validation -> research_discovery edge) are treated as effectively done.
+    # Guard: only apply this if every pending phase has at least one incoming edge
+    # (i.e. no pending phase is an independent entry-point that can run on its own).
+    terminal_node_completed = any(
+        phase_state.status == "completed"
+        and all(e.from_ != name for e in config.edges)
+        for name, phase_state in state.phases.items()
+    )
+    pending_phases = [
+        name
+        for name, phase_state in state.phases.items()
+        if phase_state.status == "pending"
+    ]
+    all_pending_have_incoming_edges = all(
+        any(e.to == name for e in config.edges) for name in pending_phases
+    )
+    if terminal_node_completed and all_pending_have_incoming_edges:
+        return "completed"
+
+    completed = get_completed_phases(state)
+    skipped = get_skipped_phases(state)
+    artifact_types = get_artifact_types(state)
+    next_phases = resolve_next_phases(config, completed, artifact_types, skipped)
+
+    return "completed" if len(next_phases) == 0 else "running"
+
+
+def finalize_run_terminal_status(
+    state: RunState,
+    new_status: Literal["completed", "failed"],
+    state_dir: str,
+) -> RunState:
+    """Set the run's terminal status fields and persist atomically.
+
+    Ported from ``finalizeRunTerminalStatus`` in ``run-state.ts``. Used by
+    lifecycle handlers after :func:`compute_run_terminal_status` reports a
+    terminal result (``new_status`` is ``'completed'`` or ``'failed'``). Mutates
+    ``status`` + ``completed_at`` and persists via the atomic write path.
+    """
+    state.status = new_status
+    state.completed_at = _now_iso()
+    _persist(state, state_dir)
+    return state
 
 
 # ── Run state derivations (pure, for recommendations and warnings) ──
