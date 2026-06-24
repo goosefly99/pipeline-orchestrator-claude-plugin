@@ -881,11 +881,11 @@ def test_register_lifecycle_tools_outputschema_is_none() -> None:
     assert len(tools) == 11
 
 
-def test_global_handshake_still_zero_tools() -> None:
-    """The global ``register_tools`` seam still registers 0 tools (T6.5 owns wiring).
+def test_global_handshake_wires_full_43_tools() -> None:
+    """The global ``register_tools`` seam wires the full 43 tools (T6.5 owns wiring).
 
-    ``register_lifecycle_tools`` is defined + isolation-tested but NOT wired into
-    ``tools/__init__.py``; the MCP handshake must still enumerate 0 tools.
+    ``register_lifecycle_tools`` (11 tools) is one of the seven registrars fanned
+    out by ``tools/__init__.py``; the MCP handshake now enumerates all 43 tools.
     """
     import asyncio
 
@@ -896,4 +896,4 @@ def test_global_handshake_still_zero_tools() -> None:
     fresh = FastMCP("pipeline")
     assert len(asyncio.run(fresh.list_tools())) == 0
     register_tools(fresh)
-    assert len(asyncio.run(fresh.list_tools())) == 0
+    assert len(asyncio.run(fresh.list_tools())) == 43

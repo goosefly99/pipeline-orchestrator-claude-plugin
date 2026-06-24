@@ -12,12 +12,14 @@ task and two by later tasks (the established deferral pattern):
 - ``generateHandoff`` (7 cases) → **ACTIVE** (port 1:1).
 - ``generatePhaseBrief`` (5 cases) → **ACTIVE** (port 1:1).
 - ``enforceResponseSize`` (4 cases) → **SKIP** (lands in T6.3, artifact-handlers.ts).
-- ``inline parameter alias`` (1) + ``Phase 5 tool schemas`` (2) → **SKIP**
-  (land in T6.5, tool-schemas.ts).
+- ``inline parameter alias`` (1) + ``Phase 5 tool schemas`` (2) → **ACTIVE** (T6.5).
+  The full 43-tool wiring landed in T6.5, so these three assert against the
+  registered FastMCP tool list (built from a fresh ``FastMCP("pipeline")`` so the
+  shared ``server.mcp`` singleton is never double-registered).
 
-The skipped case bodies are ported so they are ready to unskip; they are marked
-``@pytest.mark.skip`` and reference not-yet-ported symbols only inside the skipped
-methods (never at import time).
+The ``enforceResponseSize`` case bodies are ported so they are ready to unskip;
+they are marked ``@pytest.mark.skip`` and reference not-yet-ported symbols only
+inside the skipped methods (never at import time).
 """
 
 from __future__ import annotations
@@ -444,20 +446,23 @@ class TestEnforceResponseSize:
 class TestInlineParameterAlias:
     """Port of the Node ``describe('inline parameter alias', ...)`` block.
 
-    SKIPPED: tool schemas land in T6.5 (tool-schemas.ts → typed FastMCP tool
-    signatures). FastMCP derives ``inputSchema`` from the registered tool's
-    typed signature; this asserts the ``inline``/``full`` params exist on the
-    registered ``pipeline_load_artifact`` tool once wiring lands.
+    ACTIVE (T6.5): the full 43-tool wiring landed. FastMCP derives ``inputSchema``
+    from the registered tool's typed signature; this asserts the ``inline`` /
+    ``full`` params exist on the registered ``pipeline_load_artifact`` tool. Built
+    from a fresh ``FastMCP("pipeline")`` so the shared ``server.mcp`` singleton is
+    never double-registered.
     """
 
-    @pytest.mark.skip(reason="tool-schemas lands in T6.5")
     def test_tool_schema_includes_inline_parameter(self) -> None:
         import asyncio
 
-        from pipeline_orchestrator import server
+        from mcp.server.fastmcp import FastMCP
 
-        server.register_tools(server.mcp)
-        tools = asyncio.run(server.mcp.list_tools())
+        from pipeline_orchestrator.tools import register_tools
+
+        mcp = FastMCP("pipeline")
+        register_tools(mcp)
+        tools = asyncio.run(mcp.list_tools())
         load_tool = next(
             (t for t in tools if t.name == "pipeline_load_artifact"), None
         )
@@ -473,19 +478,23 @@ class TestInlineParameterAlias:
 class TestPhase5ToolSchemas:
     """Port of the Node ``describe('Phase 5 tool schemas', ...)`` block.
 
-    SKIPPED: tool schemas + annotations land in T6.5. Asserts the
-    ``pipeline_phase_handoff`` / ``pipeline_phase_brief`` tools register with the
-    expected ``readOnlyHint`` / ``idempotentHint`` annotations and required args.
+    ACTIVE (T6.5): tool schemas + annotations landed with the full 43-tool
+    wiring. Asserts the ``pipeline_phase_handoff`` / ``pipeline_phase_brief``
+    tools register with the expected ``readOnlyHint`` / ``idempotentHint``
+    annotations and required args. Built from a fresh ``FastMCP("pipeline")`` so
+    the shared ``server.mcp`` singleton is never double-registered.
     """
 
-    @pytest.mark.skip(reason="tool-schemas lands in T6.5")
     def test_pipeline_phase_handoff_is_registered_with_read_only_hint(self) -> None:
         import asyncio
 
-        from pipeline_orchestrator import server
+        from mcp.server.fastmcp import FastMCP
 
-        server.register_tools(server.mcp)
-        tools = asyncio.run(server.mcp.list_tools())
+        from pipeline_orchestrator.tools import register_tools
+
+        mcp = FastMCP("pipeline")
+        register_tools(mcp)
+        tools = asyncio.run(mcp.list_tools())
         handoff_tool = next(
             (t for t in tools if t.name == "pipeline_phase_handoff"), None
         )
@@ -496,14 +505,16 @@ class TestPhase5ToolSchemas:
         assert handoff_tool.annotations.readOnlyHint is True
         assert handoff_tool.annotations.idempotentHint is True
 
-    @pytest.mark.skip(reason="tool-schemas lands in T6.5")
     def test_pipeline_phase_brief_is_registered_with_read_only_hint(self) -> None:
         import asyncio
 
-        from pipeline_orchestrator import server
+        from mcp.server.fastmcp import FastMCP
 
-        server.register_tools(server.mcp)
-        tools = asyncio.run(server.mcp.list_tools())
+        from pipeline_orchestrator.tools import register_tools
+
+        mcp = FastMCP("pipeline")
+        register_tools(mcp)
+        tools = asyncio.run(mcp.list_tools())
         brief_tool = next(
             (t for t in tools if t.name == "pipeline_phase_brief"), None
         )

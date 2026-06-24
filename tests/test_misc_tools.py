@@ -935,15 +935,29 @@ def test_register_misc_tools_meta_and_annotations() -> None:
         assert ann.readOnlyHint is None, name
 
 
-def test_register_misc_tools_not_wired_into_global_seam() -> None:
-    """The global ``register_tools`` seam still enumerates 0 tools (T6.5 wires)."""
+def test_register_misc_tools_wired_into_global_seam() -> None:
+    """The global ``register_tools`` seam now enumerates the full 43 tools (T6.5).
+
+    ``register_misc_tools`` (5 tools) is one of the seven registrars fanned out by
+    ``tools/__init__.py``; its five ``pipeline_*`` tools are present in the wired
+    handshake.
+    """
     from mcp.server.fastmcp import FastMCP
 
     from pipeline_orchestrator.tools import register_tools
 
     fresh = FastMCP("pipeline")
     register_tools(fresh)
-    assert len(asyncio.run(fresh.list_tools())) == 0
+    names = {t.name for t in asyncio.run(fresh.list_tools())}
+    assert len(names) == 43
+    for name in (
+        "pipeline_ingest_documents",
+        "pipeline_analyze_codebase",
+        "pipeline_validate_run",
+        "pipeline_feature_request",
+        "pipeline_web_search",
+    ):
+        assert name in names
 
 
 # ── Schema-availability sanity (the schemas the real ingest path needs) ─

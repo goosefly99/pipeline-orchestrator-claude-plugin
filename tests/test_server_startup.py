@@ -7,7 +7,7 @@ with it. Here the 4-case budget is reinterpreted onto the NEW pure-Python
 FastMCP server:
 
 1. the server module imports and the FastMCP app constructs/boots without error;
-2. ``register_tools`` is a no-op → 0 tools registered;
+2. ``register_tools`` wires the full 43 tools onto the FastMCP instance;
 3. ``main`` is importable/callable (import-level; we do not block on stdio);
 4. config is lazy — importing the package + constructing the server reads NO env
    and resolves NO ``pipeline.toml`` (handshake-safe, spec §3.2).
@@ -43,8 +43,8 @@ def test_server_module_imports_and_app_constructs() -> None:
     server.configure_logging()
 
 
-def test_register_tools_is_noop_zero_tools() -> None:
-    """Case 2: register_tools registers exactly 0 tools (the M6 wiring seam stub)."""
+def test_register_tools_wires_full_43_tools() -> None:
+    """Case 2: register_tools wires the full 43 tools (the M6 wiring seam, T6.5)."""
     from mcp.server.fastmcp import FastMCP
 
     from pipeline_orchestrator import server
@@ -52,11 +52,11 @@ def test_register_tools_is_noop_zero_tools() -> None:
     fresh = FastMCP("pipeline")
     assert len(asyncio.run(fresh.list_tools())) == 0
     server.register_tools(fresh)
-    assert len(asyncio.run(fresh.list_tools())) == 0
+    assert len(asyncio.run(fresh.list_tools())) == 43
 
-    # And the package's own module-level instance exposes 0 tools after wiring.
+    # And the package's own module-level instance exposes 43 tools after wiring.
     server.register_tools(server.mcp)
-    assert len(asyncio.run(server.mcp.list_tools())) == 0
+    assert len(asyncio.run(server.mcp.list_tools())) == 43
 
 
 def test_main_is_importable_callable() -> None:
