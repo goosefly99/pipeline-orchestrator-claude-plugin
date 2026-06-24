@@ -554,3 +554,112 @@ class DesignSpec:
     risks: list[SpecRisk] = field(default_factory=list)
     success_criteria: list[str] = field(default_factory=list)
     notes: str = ""
+
+
+# ── Debate-engine data shapes (debate.ts → models.py, spec §5.3) ─────
+#
+# Folds the ``debate.ts`` in-memory debate types into models.py (appended by
+# T4.1). These mirror the TS interfaces, with one deliberate naming convention:
+# the TS ``DebateState`` carries camelCase fields (``transcriptId`` etc.) because
+# it is a transient in-memory object that is never serialized directly — the
+# persisted ``DebateTranscript`` (snake_case, schema-driven) is assembled
+# explicitly by ``build_transcript``. The Python port uses snake_case fields
+# throughout (PEP 8 + the sibling-module convention); the on-disk transcript
+# byte layout is reproduced by ``debate.build_transcript`` independently of these
+# field names. ``AgentRole`` is the union of the five roles; the four ``?:``
+# optional argument arrays default to ``None`` (the engine coalesces them to
+# ``[]`` exactly where the TS ``?? []`` does).
+
+AgentRole = Literal[
+    "advocate",
+    "critic",
+    "risk_specialist",
+    "domain_specialist",
+    "synthesizer",
+]
+"""``debate.ts`` ``AgentRole`` union — the five debate roles."""
+
+DebateInputType = Literal["knowledge-overview", "design-spec"]
+"""``debate.ts`` ``DebateInputType`` union — the two debatable artifact types."""
+
+
+@dataclass
+class DomainProfile:
+    """A debate domain profile (mirrors TS ``DomainProfile``).
+
+    Drives the risk-specialist vocabulary and domain-specialist focus
+    interpolated into the round-1 agent prompts. The four built-ins
+    (``finance`` / ``software`` / ``research`` / ``default``) live in
+    ``debate.py``; a caller may also pass a custom instance through
+    ``resolve_profile``.
+    """
+
+    name: str
+    risk_vocabulary: list[str] = field(default_factory=list)
+    domain_constraints: list[str] = field(default_factory=list)
+    specialist_focus: str = ""
+
+
+@dataclass
+class AgentArgument:
+    """One round-1 agent argument (mirrors TS ``AgentArgument``).
+
+    ``evidence`` / ``counterpoints`` / ``proposed_changes`` are the ``?:``
+    optionals (``None`` until the engine coalesces them to ``[]`` on submit).
+    ``confidence`` is required and explicitly falsy-safe (``0`` survives).
+    """
+
+    role: AgentRole
+    position: str
+    confidence: float
+    evidence: list[str] | None = None
+    counterpoints: list[str] | None = None
+    proposed_changes: list[str] | None = None
+
+
+@dataclass
+class DebateSynthesis:
+    """The synthesizer's final decision (mirrors TS ``DebateSynthesis``).
+
+    ``open_questions`` is the lone ``?:`` optional. ``changes_rejected`` is a
+    list of ``{proposed, reason}`` dicts (the TS inline object type).
+    """
+
+    changes_accepted: list[str] = field(default_factory=list)
+    changes_rejected: list[dict[str, str]] = field(default_factory=list)
+    open_questions: list[str] | None = None
+
+
+@dataclass
+class DebateState:
+    """Transient in-memory debate state (mirrors TS ``DebateState``).
+
+    Required fields come first; the ``?:`` optionals
+    (``artifact_path`` / ``codebase_requirements_id``) default to ``None``.
+    ``output_version`` is required-but-nullable in the TS (``string | null``),
+    initialized to ``None`` by ``init_debate``. ``round1_arguments`` is the
+    required array defaulting to empty; ``synthesis`` is ``None`` until recorded.
+    ``domain_profile`` is resolved at construction by ``resolve_profile``.
+    """
+
+    transcript_id: str
+    input_type: DebateInputType
+    input_id: str
+    input_version: str
+    output_version: str | None
+    created_date: str
+    artifact_content: object
+    kb_queries_used: bool
+    domain_profile: DomainProfile
+    round1_arguments: list[AgentArgument] = field(default_factory=list)
+    synthesis: DebateSynthesis | None = None
+    artifact_path: str | None = None
+    codebase_requirements_id: str | None = None
+
+
+@dataclass
+class AgentPrompt:
+    """A role + its generated debate prompt (mirrors TS ``AgentPrompt``)."""
+
+    role: AgentRole
+    prompt: str
