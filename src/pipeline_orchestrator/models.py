@@ -413,3 +413,144 @@ class HandlerResponse:
 
     json: str
     is_error: bool = False
+
+
+# ── Design-spec data shapes (synth-types.ts → models.py, spec §3.3) ──
+#
+# Folds the ``synth-types.ts`` "Design spec types" shapes into models.py
+# (appended by T3.4, mirroring the T3.3 ``cc-types.ts`` fold above). These
+# dataclasses mirror the TS interfaces field-for-field: required arrays default
+# via ``field(default_factory=list)`` matching the Node object literals; the
+# nested ``overview`` / ``architecture`` / ``implementation`` objects are their
+# own dataclasses so the on-disk ``JSON.stringify(spec, null, 2)`` field order
+# is reproducible. ``ResearchItem`` is reused from ``collections_store`` (the
+# shared store) rather than redefined.
+
+SpecType = Literal["implementation", "architecture", "research", "comparison"]
+"""``synth-types.ts`` ``SpecType`` union — ``create_spec`` defaults to
+``implementation``."""
+
+SpecStatus = Literal["draft", "review", "approved", "implemented"]
+"""``synth-types.ts`` ``SpecStatus`` union — a spec is ``draft`` until promoted."""
+
+SpecSeverity = Literal["low", "medium", "high"]
+"""``synth-types.ts`` ``SpecRisk.severity`` union."""
+
+SpecComplexity = Literal["low", "medium", "high"]
+"""``synth-types.ts`` ``DesignSpec.implementation.complexity`` union."""
+
+
+@dataclass
+class SpecSource:
+    """A source-item reference inside a design spec (mirrors TS ``SpecSource``).
+
+    All four fields are required in the TS interface; ``relevance`` is the
+    free-form per-item note (empty string when the user supplies none).
+    """
+
+    collection: str
+    item_id: str
+    title: str
+    relevance: str = ""
+
+
+@dataclass
+class SpecComponent:
+    """An architecture component inside a design spec (mirrors TS ``SpecComponent``).
+
+    All five fields are required in TS; the three arrays default to empty lists
+    so the blank template (which seeds ``components: []``) and any future
+    fixtures can omit them.
+    """
+
+    name: str = ""
+    purpose: str = ""
+    inputs: list[str] = field(default_factory=list)
+    outputs: list[str] = field(default_factory=list)
+    dependencies: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SpecPhase:
+    """An implementation phase inside a design spec (mirrors TS ``SpecPhase``).
+
+    ``phase`` is the 1-based phase number; the two arrays default to empty.
+    """
+
+    phase: int = 0
+    name: str = ""
+    tasks: list[str] = field(default_factory=list)
+    deliverables: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SpecRisk:
+    """A risk inside a design spec (mirrors TS ``SpecRisk``).
+
+    ``severity`` is one of ``low`` / ``medium`` / ``high``.
+    """
+
+    description: str = ""
+    severity: SpecSeverity = "medium"
+    mitigation: str = ""
+
+
+@dataclass
+class SpecOverview:
+    """The ``overview`` sub-object of a design spec (mirrors the TS inline shape).
+
+    Pulled out into its own dataclass (the TS inline ``{ description; objectives;
+    constraints; assumptions }``) so the on-disk JSON field order is reproduced.
+    """
+
+    description: str = ""
+    objectives: list[str] = field(default_factory=list)
+    constraints: list[str] = field(default_factory=list)
+    assumptions: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SpecArchitecture:
+    """The ``architecture`` sub-object of a design spec (TS inline shape)."""
+
+    components: list[SpecComponent] = field(default_factory=list)
+    data_flow: str = ""
+    integration_points: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SpecImplementation:
+    """The ``implementation`` sub-object of a design spec (TS inline shape)."""
+
+    phases: list[SpecPhase] = field(default_factory=list)
+    tech_stack: list[str] = field(default_factory=list)
+    complexity: SpecComplexity = "medium"
+
+
+@dataclass
+class DesignSpec:
+    """A structured design spec (mirrors TS ``DesignSpec``).
+
+    Required scalars (``spec_id`` / ``title`` / ``created_date`` /
+    ``updated_date`` / ``version`` / ``status`` / ``spec_type``) come first;
+    ``domain`` is the lone ``?:`` optional (``None``); the nested ``overview`` /
+    ``architecture`` / ``implementation`` objects and the required arrays default
+    to their blank-template values, matching the Node object literal built by
+    ``createSpecSynthesis``.
+    """
+
+    spec_id: str
+    title: str
+    created_date: str
+    updated_date: str
+    version: str
+    status: SpecStatus
+    spec_type: SpecType
+    domain: str | None = None
+    sources: list[SpecSource] = field(default_factory=list)
+    overview: SpecOverview = field(default_factory=SpecOverview)
+    architecture: SpecArchitecture = field(default_factory=SpecArchitecture)
+    implementation: SpecImplementation = field(default_factory=SpecImplementation)
+    risks: list[SpecRisk] = field(default_factory=list)
+    success_criteria: list[str] = field(default_factory=list)
+    notes: str = ""

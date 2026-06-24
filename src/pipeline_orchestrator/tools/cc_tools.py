@@ -128,13 +128,21 @@ def handle_cc_load_collection(
 
 def handle_cc_query(args: dict[str, object], ctx: CCContext) -> HandlerResponse:
     """Query loaded items and render a preview block (TS ``handleCCQuery``)."""
-    results = ctx.query_items(
-        collection=args.get("collection"),
-        tags=args.get("tags"),
-        search=args.get("search"),
-        fields=args.get("fields"),
-        limit=args.get("limit"),
-    )
+    # Nullish-not-falsy limit (TS ``{ limit = 20 }`` defaults only on
+    # ``undefined``). An absent ``limit`` must NOT be forwarded — passing an
+    # explicit ``None`` into ``query_items(..., limit: int = 20)`` would defeat
+    # its default and crash on a non-empty store (``int >= None``). An explicit
+    # value (including ``0``) is forwarded unchanged.
+    query_kwargs: dict[str, object] = {
+        "collection": args.get("collection"),
+        "tags": args.get("tags"),
+        "search": args.get("search"),
+        "fields": args.get("fields"),
+    }
+    limit = args.get("limit")
+    if limit is not None:
+        query_kwargs["limit"] = limit
+    results = ctx.query_items(**query_kwargs)
 
     if len(results) == 0:
         return HandlerResponse(json="No items matched the query.")

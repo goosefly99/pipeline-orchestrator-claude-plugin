@@ -19,6 +19,7 @@ test constructs its own FastMCP instance, so the global handshake stays at 0.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 
 import pytest
 
@@ -34,6 +35,7 @@ from pipeline_orchestrator.tools.cc_tools import (
     handle_cc_collect_concepts,
     handle_cc_get_items,
     handle_cc_get_overview,
+    handle_cc_query,
     handle_cc_save_overview,
     register_cc_tools,
 )
@@ -492,3 +494,105 @@ def test_get_overview_handler_output_keeps_raw_non_ascii() -> None:
     assert "é" in resp and "—" in resp, "raw non-ASCII chars should be present"
     assert "\\u00e9" not in resp, "é must not be \\uXXXX-escaped"
     assert "\\u2014" not in resp, "em-dash must not be \\uXXXX-escaped"
+
+
+# ── handle_cc_query — nullish-not-falsy ``limit`` regression (H1) ───
+
+
+def _seed_cc_store(
+    name: str, items: list[ResearchItem]
+) -> Callable[[], None]:
+    """Seed the shared module ``STORE`` with a collection and return a teardown.
+
+    Inserts a ``ResearchCollection`` directly (no disk) so ``handle_cc_query``,
+    wired to the real ``collections_store.query_items``, sees a non-empty store.
+    """
+    from pipeline_orchestrator.collections_store import (
+        STORE,
+        FieldMap,
+        ResearchCollection,
+    )
+
+    STORE[name] = ResearchCollection(
+        name=name,
+        file_path=f"/virtual/{name}.json",
+        items=items,
+        field_map=FieldMap(
+            items_key="items",
+            id_field="id",
+            content_field="content",
+            title_field="title",
+            tags_field="tags",
+        ),
+        available_tags=[],
+    )
+
+    def _teardown() -> None:
+        STORE.pop(name, None)
+
+    return _teardown
+
+
+def _real_query_ctx() -> CCContext:
+    """A CCContext whose ``query_items`` is the REAL shared-store function."""
+    from pipeline_orchestrator.collections_store import query_items as real_query_items
+
+    return CCContext(
+        load_collection=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no")),
+        query_items=real_query_items,
+        get_items=lambda *a, **k: [],
+        collect_concepts=lambda *a, **k: _StubResult(),
+        save_overview=lambda *a, **k: "",
+        list_overviews=lambda *a, **k: [],
+        get_overview=lambda *a, **k: None,
+    )
+
+
+def test_cc_query_omitted_limit_does_not_crash_on_nonempty_store() -> None:
+    """Regression for H1: omitting ``limit`` must NOT crash on a non-empty store.
+
+    ``handle_cc_query`` previously forwarded an explicit ``None`` into
+    ``query_items(..., limit: int = 20)``, crashing on ``len(results) >= None``.
+    After the fix the function default ``20`` applies and all (<=20) items return.
+    """
+    teardown = _seed_cc_store(
+        "cc-limit-col",
+        [
+            make_item("c1", "alpha"),
+            make_item("c2", "beta"),
+            make_item("c3", "gamma"),
+        ],
+    )
+    try:
+        ctx = _real_query_ctx()
+        # Args deliberately OMIT ``limit``.
+        result = handle_cc_query({"collection": "cc-limit-col"}, ctx)
+        assert result.json.startswith("Found 3 item(s):")
+        assert "[c1] Item c1" in result.json
+        assert "[c2] Item c2" in result.json
+        assert "[c3] Item c3" in result.json
+    finally:
+        teardown()
+
+
+def test_cc_query_explicit_limit_is_honored() -> None:
+    """An explicit ``limit`` still caps the result count (regression guard)."""
+    teardown = _seed_cc_store(
+        "cc-explimit-col",
+        [
+            make_item("d1", "one"),
+            make_item("d2", "two"),
+            make_item("d3", "three"),
+        ],
+    )
+    try:
+        ctx = _real_query_ctx()
+        result = handle_cc_query(
+            {"collection": "cc-explimit-col", "limit": 1}, ctx
+        )
+        assert result.json.startswith("Found 1 item(s):")
+        assert "[d1] Item d1" in result.json
+        assert "[d2] Item d2" not in result.json
+    finally:
+        teardown()
+
