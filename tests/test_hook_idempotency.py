@@ -34,8 +34,12 @@ from pathlib import Path
 
 import pytest
 
+from pipeline_orchestrator.errors import ErrorClass, PipelineError
 from pipeline_orchestrator.hooks import run_hooks
-from pipeline_orchestrator.models import HookConfig
+from pipeline_orchestrator.models import HookConfig, PhaseState, RunState
+from pipeline_orchestrator.tools.lifecycle_tools import (
+    append_phase_completed_event,
+)
 
 _NODE_PATH = shutil.which("node")
 _NODE_REASON = "requires the node binary on PATH to run hook subprocesses"
@@ -230,54 +234,111 @@ class TestRunHooksPostCompleteIdempotencyGuard:
 
 # ── Test case 3: appendPhaseCompletedEvent validation + idempotency ──
 #
-# These 3 cases drive ``appendPhaseCompletedEvent`` from ``lifecycle-handlers.ts``
+# These 3 cases drive ``append_phase_completed_event`` from ``lifecycle_tools.py``
 # — the idempotent events.jsonl wrapper that validates phase existence + status
-# before writing. That wrapper is a **T6.2** deliverable; ported 1:1 here but
-# skipped until ``append_phase_completed_event`` lands.
-
-_APPEND_PHASE_COMPLETED_REASON = (
-    "T6.2: appendPhaseCompletedEvent (validating idempotent events.jsonl wrapper) "
-    "lives in the lifecycle-handler layer (lifecycle-handlers.ts), not the T2.5 "
-    "hooks seam. Ported 1:1 and unskipped when lifecycle_handlers lands."
-)
+# before writing. Unskipped at T6.2 when ``append_phase_completed_event`` landed;
+# ported 1:1 against the TS oracle.
 
 
-@pytest.mark.skip(reason=_APPEND_PHASE_COMPLETED_REASON)
+def _make_phase(name: str, status: str) -> PhaseState:
+    """Build a PhaseState with started/completed stamps (Node ``makePhase``)."""
+    return PhaseState(
+        phase_name=name,
+        status=status,  # type: ignore[arg-type]
+        input_artifacts=[],
+        output_artifacts=[],
+        retry_count=0,
+        started_at=_now_iso() if status != "pending" else None,
+        completed_at=_now_iso() if status == "completed" else None,
+    )
+
+
+def _make_run_state(temp_dir: str, phases: dict[str, str]) -> RunState:
+    """Build a RunState from a ``{name: status}`` map (Node ``makeRunState``)."""
+    phase_map: dict[str, PhaseState] = {}
+    for name, status in phases.items():
+        phase_map[name] = _make_phase(name, status)
+    return RunState(
+        run_id="test-run",
+        pipeline_version="1.0.0",
+        created_at=_now_iso(),
+        updated_at=_now_iso(),
+        status="running",
+        config_path=temp_dir,
+        phases=phase_map,
+        available_artifacts=[],
+    )
+
+
 class TestAppendPhaseCompletedEvent:
     def test_writes_once_then_suppresses_duplicate_writes_for_the_same_phase(
         self, tmp_path: Path
     ) -> None:
-        raise NotImplementedError(_APPEND_PHASE_COMPLETED_REASON)
+        temp_dir = str(tmp_path)
+        state = _make_run_state(temp_dir, {"phaseA": "completed"})
+
+        first_write = append_phase_completed_event(temp_dir, state, "phaseA")
+        assert first_write is True
+        assert _count_phase_completed_events(temp_dir, "phaseA") == 1
+
+        second_write = append_phase_completed_event(temp_dir, state, "phaseA")
+        assert second_write is False
+        assert _count_phase_completed_events(temp_dir, "phaseA") == 1
 
     def test_throws_state_transition_error_when_phase_is_not_in_state(
         self, tmp_path: Path
     ) -> None:
-        raise NotImplementedError(_APPEND_PHASE_COMPLETED_REASON)
+        temp_dir = str(tmp_path)
+        state = _make_run_state(temp_dir, {"phaseA": "completed"})
+
+        with pytest.raises(PipelineError) as exc_info:
+            append_phase_completed_event(temp_dir, state, "phaseB")
+        assert exc_info.value.error_class == ErrorClass.state_transition_error
+        assert "phaseB" in exc_info.value.message
 
     def test_throws_state_transition_error_when_phase_status_is_not_completed(
         self, tmp_path: Path
     ) -> None:
-        raise NotImplementedError(_APPEND_PHASE_COMPLETED_REASON)
+        temp_dir = str(tmp_path)
+        state = _make_run_state(temp_dir, {"phaseC": "in_progress"})
+
+        with pytest.raises(PipelineError) as exc_info:
+            append_phase_completed_event(temp_dir, state, "phaseC")
+        assert exc_info.value.error_class == ErrorClass.state_transition_error
+        assert "in_progress" in exc_info.value.message
 
 
 # ── Test case 4: TS + JS double-write regression (Fix 6.5) ────────────
 #
-# Asserts the Node-only ``hooks/scripts/post-phase-complete.mjs`` source no
-# longer calls ``appendFileSync`` against events.jsonl. The JS hook scripts are
-# not part of the pure-Python port surface, and the assertion depends on
-# ``appendPhaseCompletedEvent`` (T6.2). Ported 1:1 here but skipped.
-
-_TS_JS_REASON = (
-    "T6.2: depends on appendPhaseCompletedEvent (lifecycle-handlers.ts) and "
-    "asserts the source of a Node-only hooks/scripts/post-phase-complete.mjs "
-    "file, which is not part of the pure-Python port surface. Ported 1:1 and "
-    "unskipped when lifecycle_handlers lands."
-)
+# Asserts the Node ``hooks/scripts/post-phase-complete.mjs`` source no longer
+# calls ``appendFileSync`` against events.jsonl (Fix 6.5). The ``.mjs`` hook
+# scripts are not part of the pure-Python port surface, so the source path is
+# resolved under ``legacy-node/`` (the frozen Node tree) rather than the Node
+# ``process.cwd()``. The ``append_phase_completed_event`` half is the real T6.2
+# wrapper. Unskipped at T6.2; ported 1:1.
 
 
-@pytest.mark.skip(reason=_TS_JS_REASON)
 class TestTSJSIdempotencyAfterFix65:
     def test_post_phase_complete_mjs_does_not_write_a_duplicate(
         self, tmp_path: Path
     ) -> None:
-        raise NotImplementedError(_TS_JS_REASON)
+        temp_dir = str(tmp_path)
+        state = _make_run_state(temp_dir, {"curation": "completed"})
+        run_dir = temp_dir
+
+        # Write one phase_completed via the wrapper.
+        append_phase_completed_event(run_dir, state, "curation")
+        assert _count_phase_completed_events(run_dir, "curation") == 1
+
+        # Assert the frozen Node post-phase-complete.mjs source does NOT append
+        # directly to events.jsonl (Fix 6.5). Resolved under legacy-node/.
+        repo_root = Path(__file__).resolve().parent.parent
+        post_path = (
+            repo_root / "legacy-node" / "hooks" / "scripts" / "post-phase-complete.mjs"
+        )
+        src = post_path.read_text(encoding="utf-8")
+        assert "appendFileSync(eventsPath" not in src
+        assert "appendFileSync" not in src
+
+        # Count remains 1 (the wrapper already wrote it).
+        assert _count_phase_completed_events(run_dir, "curation") == 1

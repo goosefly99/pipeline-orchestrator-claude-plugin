@@ -44,6 +44,15 @@ from pipeline_orchestrator.hooks import (
 )
 from pipeline_orchestrator.models import HookConfig
 from pipeline_orchestrator.toml_loader import load_hooks_config, load_pipeline_config
+from pipeline_orchestrator.tools.lifecycle_tools import append_event
+
+
+def _now_iso() -> str:
+    """ISO 8601 UTC timestamp (mirrors Node ``new Date().toISOString()``)."""
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC)
+    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
 # Resolve the node binary the way the Node ``nodeHookCommand`` helper does:
 # project_root = dirname(node), command = basename(node). Script files live in
@@ -407,37 +416,98 @@ class TestRunHooksAgentDirectivePassthrough:
 
 # ── appendEvent ──────────────────────────────────────────────
 #
-# These 4 cases exercise ``appendEvent`` from ``lifecycle-handlers.ts`` — the
-# events.jsonl audit-trail writer. That writer is a **T6.2** deliverable
-# (lifecycle-handler layer); it is ported here 1:1 but skipped until
-# ``append_event`` lands. The hooks seam under test (``run_hooks``) reads
-# events.jsonl directly via its idempotency guard, which is covered by
-# ``test_hook_idempotency.py``.
-
-_APPEND_EVENT_REASON = (
-    "T6.2: appendEvent (events.jsonl writer) lives in the lifecycle-handler "
-    "layer (lifecycle-handlers.ts), not the T2.5 hooks seam. Ported 1:1 and "
-    "unskipped when lifecycle_handlers lands."
-)
+# These 4 cases exercise ``append_event`` from ``lifecycle_tools.py`` — the
+# events.jsonl audit-trail writer. Unskipped at T6.2 when ``append_event``
+# landed; ported 1:1 against the TS oracle. The hooks seam under test
+# (``run_hooks``) reads events.jsonl directly via its idempotency guard, which
+# is covered by ``test_hook_idempotency.py``.
 
 
-@pytest.mark.skip(reason=_APPEND_EVENT_REASON)
 class TestAppendEvent:
     def test_creates_events_jsonl_and_appends_a_single_event(
         self, tmp_path: Path
     ) -> None:
-        raise NotImplementedError(_APPEND_EVENT_REASON)
+        temp_dir = str(tmp_path)
+        event = {
+            "timestamp": _now_iso(),
+            "event": "phase_started",
+            "phase": "discovery",
+            "run_id": "test-run",
+        }
+
+        append_event(temp_dir, event)
+
+        events_path = os.path.join(temp_dir, "events.jsonl")
+        assert os.path.exists(events_path)
+
+        with open(events_path, encoding="utf-8") as fh:
+            content = fh.read().strip()
+        parsed = json.loads(content)
+        assert parsed["event"] == "phase_started"
+        assert parsed["phase"] == "discovery"
 
     def test_appends_multiple_events_as_separate_lines(self, tmp_path: Path) -> None:
-        raise NotImplementedError(_APPEND_EVENT_REASON)
+        temp_dir = str(tmp_path)
+        event1 = {
+            "timestamp": _now_iso(),
+            "event": "phase_started",
+            "phase": "discovery",
+            "run_id": "test-run",
+        }
+        event2 = {
+            "timestamp": _now_iso(),
+            "event": "phase_completed",
+            "phase": "discovery",
+            "run_id": "test-run",
+        }
+
+        append_event(temp_dir, event1)
+        append_event(temp_dir, event2)
+
+        with open(os.path.join(temp_dir, "events.jsonl"), encoding="utf-8") as fh:
+            lines = fh.read().strip().split("\n")
+        assert len(lines) == 2
+
+        parsed1 = json.loads(lines[0])
+        parsed2 = json.loads(lines[1])
+        assert parsed1["event"] == "phase_started"
+        assert parsed2["event"] == "phase_completed"
 
     def test_creates_run_directory_if_it_does_not_exist(
         self, tmp_path: Path
     ) -> None:
-        raise NotImplementedError(_APPEND_EVENT_REASON)
+        temp_dir = str(tmp_path)
+        sub_dir = os.path.join(temp_dir, "nested", "run")
+        assert not os.path.exists(sub_dir)
+
+        append_event(
+            sub_dir,
+            {
+                "timestamp": _now_iso(),
+                "event": "phase_started",
+                "phase": "discovery",
+                "run_id": "test-run",
+            },
+        )
+
+        assert os.path.exists(os.path.join(sub_dir, "events.jsonl"))
 
     def test_includes_details_when_provided(self, tmp_path: Path) -> None:
-        raise NotImplementedError(_APPEND_EVENT_REASON)
+        temp_dir = str(tmp_path)
+        event = {
+            "timestamp": _now_iso(),
+            "event": "phase_failed",
+            "phase": "curation",
+            "run_id": "test-run",
+            "details": {"error": "API timeout"},
+        }
+
+        append_event(temp_dir, event)
+
+        with open(os.path.join(temp_dir, "events.jsonl"), encoding="utf-8") as fh:
+            content = fh.read().strip()
+        parsed = json.loads(content)
+        assert parsed["details"]["error"] == "API timeout"
 
 
 # ── loadHooksConfig (TOML parsing) ───────────────────────────

@@ -29,14 +29,41 @@ import json
 import os
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from pipeline_orchestrator.dag import InputSatisfaction
 from pipeline_orchestrator.errors import ErrorClass, PipelineError
-from pipeline_orchestrator.hooks import run_pre_pipeline_init_hooks
-from pipeline_orchestrator.models import HookConfig
+from pipeline_orchestrator.hooks import (
+    PreInitHookResult,
+    run_pre_pipeline_init_hooks,
+)
+from pipeline_orchestrator.models import (
+    DebateConfig,
+    DebateOutputConfig,
+    HookConfig,
+    KBDefaults,
+    PhaseDefinition,
+    PipelineConfig,
+    PipelineMeta,
+    RunState,
+    StorageConfig,
+)
+from pipeline_orchestrator.quality_gates import GateResult
+from pipeline_orchestrator.run_state import (
+    RecommendedAction,
+    RecoveryResult,
+    load_run_state,
+)
+from pipeline_orchestrator.run_state import add_artifact as add_artifact_state
 from pipeline_orchestrator.run_state import init_run as init_run_state
+from pipeline_orchestrator.run_state import skip_phase as skip_phase_state
 from pipeline_orchestrator.toml_loader import load_hooks_config
+from pipeline_orchestrator.tools.lifecycle_tools import (
+    LifecycleContext,
+    handle_init_run,
+)
 
 _NODE_PATH = shutil.which("node")
 _NODE_REASON = "requires the node binary on PATH to run hook subprocesses"
@@ -306,55 +333,313 @@ command = "hooks/x.js"
         assert hooks[0].command == "hooks/x.js"
 
 
-# ── handleInitRun — pre_pipeline_init integration ───────────
+# ── handle_init_run — pre_pipeline_init integration ─────────
 #
-# These 6 cases drive ``handleInitRun`` from ``lifecycle-handlers.ts`` — the
-# short-circuit / parameter-merge / persistence wiring around the pre-init
-# runner (including the ``user_input_required`` envelope and the no-state-on-
-# short-circuit invariant). That handler is a **T6.2** deliverable; ported 1:1
-# here but skipped until ``handle_init_run`` (and its mockable LifecycleContext)
-# land. The runner they wrap (``run_pre_pipeline_init_hooks``) is fully covered
-# by the unit cases above.
-
-_HANDLE_INIT_RUN_REASON = (
-    "T6.2: handleInitRun (pre_pipeline_init short-circuit + parameter-merge + "
-    "persistence wiring, with a mockable LifecycleContext) lives in the "
-    "lifecycle-handler layer (lifecycle-handlers.ts), not the T2.5 hooks seam. "
-    "Ported 1:1 and unskipped when lifecycle_handlers lands."
-)
+# These 6 cases exercise the handler end-to-end with a mocked LifecycleContext.
+# ``run_pre_pipeline_init_hooks`` is stubbed on the ctx so we control its return
+# without spawning real hook scripts (the underlying runner is unit-tested
+# above). The real ``init_run`` from run_state IS used so we can verify
+# run_parameters are persisted to disk. Unskipped at T6.2; ported 1:1.
 
 
-@pytest.mark.skip(reason=_HANDLE_INIT_RUN_REASON)
+def _make_integration_config() -> PipelineConfig:
+    """Single-entry-point (discovery) config (Node ``makeIntegrationConfig``)."""
+    phases = {
+        "discovery": PhaseDefinition(
+            id=0,
+            description="",
+            inputs=[],
+            outputs=[],
+            tools=[],
+            entry_point=True,
+            optional=False,
+        ),
+    }
+    return PipelineConfig(
+        pipeline=PipelineMeta(id="test", version="1.0.0", description=""),
+        phases=phases,
+        edges=[],
+        debate=DebateConfig(
+            agents={},
+            rounds={},
+            output=DebateOutputConfig(
+                includes_transcript=True,
+                includes_refined_artifact=True,
+                artifact_version_bump="minor",
+            ),
+        ),
+        knowledge_bases=KBDefaults(
+            available_in=[], max_queries_per_phase=20, query_mode="proactive"
+        ),
+        schemas={},
+        storage=StorageConfig(base_dir="test", paths={}),
+    )
+
+
+class _IntegrationCtx:
+    """Holder for an integration :class:`LifecycleContext` + an active-run ref."""
+
+    def __init__(
+        self,
+        base_dir: str,
+        hooks: list[HookConfig] | None = None,
+        pre_init_result: PreInitHookResult | None = None,
+        pre_init_throws: bool = False,
+    ) -> None:
+        self.active_run: list[RunState | None] = [None]
+        self._active_run_dir = ""
+        self._hooks = hooks if hooks is not None else []
+
+        def _set_active_run(s: RunState) -> None:
+            self.active_run[0] = s
+
+        def _set_active_run_dir(d: str) -> None:
+            self._active_run_dir = d
+
+        def _run_pre_init(
+            _hooks: list[Any], _ctx: dict[str, Any], _root: str
+        ) -> PreInitHookResult:
+            if pre_init_throws:
+                raise PipelineError("hook failed", ErrorClass.configuration_error)
+            return (
+                pre_init_result
+                if pre_init_result is not None
+                else PreInitHookResult(parameters={}, userPrompts=[])
+            )
+
+        def _phase_input_sat(
+            phase: PhaseDefinition, _types: list[str]
+        ) -> InputSatisfaction:
+            return InputSatisfaction(
+                satisfied=[], missing=phase.inputs, can_run=False
+            )
+
+        self.ctx = LifecycleContext(
+            get_active_run=lambda: self.active_run[0],
+            set_active_run=_set_active_run,
+            get_active_run_dir=lambda: self._active_run_dir,
+            set_active_run_dir=_set_active_run_dir,
+            get_config=lambda: _make_integration_config(),
+            set_project_root=lambda _root: None,
+            get_storage_config=lambda *_a, **_k: StorageConfig(
+                base_dir=base_dir, paths={}
+            ),
+            init_run=lambda r_id, pv, phases, state_dir, rp=None: init_run_state(
+                r_id, pv, phases, state_dir, rp
+            ),
+            skip_phase=lambda s, phase, d: skip_phase_state(s, phase, d),
+            add_artifact=lambda s, ref, d: add_artifact_state(s, ref, d),
+            start_phase=lambda s, _p, _d: s,
+            complete_phase=lambda s, _p, _d: s,
+            fail_phase=lambda s, _p, _e, _d: s,
+            retry_phase=lambda s, _p, _d: s,
+            resolve_next_phases=lambda *_a: [],
+            get_phase_input_satisfaction=_phase_input_sat,
+            load_run_state=lambda _d: None,
+            recover_run=lambda _d: RecoveryResult(
+                state=self.active_run[0], recovered_phases=[], warnings=[]  # type: ignore[arg-type]
+            ),
+            remove_phase_artifacts=lambda *_a: [],
+            get_quality_gates=lambda: [],
+            run_gate_checks=lambda *_a: GateResult(
+                phase="", passed=True, on_failure="warn", results=[]
+            ),
+            get_hooks_config=lambda: self._hooks,
+            run_hooks=lambda *_a: [],
+            run_pre_pipeline_init_hooks=_run_pre_init,
+            get_project_root=lambda: None,
+            compute_recommended_action=lambda *_a: RecommendedAction(
+                action="review", reason=""
+            ),
+            compute_run_warnings=lambda *_a, **_k: [],
+        )
+
+
 class TestHandleInitRunPrePipelineInitIntegration:
     def test_no_pre_init_hooks_and_no_user_params_baseline(
         self, tmp_path: Path
     ) -> None:
-        raise NotImplementedError(_HANDLE_INIT_RUN_REASON)
+        temp_dir = str(tmp_path)
+        rec = _IntegrationCtx(temp_dir)
+
+        result = handle_init_run(
+            {"run_id": "base-run", "project_root": temp_dir}, rec.ctx
+        )
+        parsed = json.loads(result.json)
+
+        assert parsed["run_id"] == "base-run"
+        assert parsed["run_parameters"] == {}
+
+        disk = load_run_state(os.path.join(temp_dir, "runs", "base-run"))
+        assert disk is not None
+        assert disk.run_parameters is None
 
     def test_no_pre_init_hooks_with_explicit_run_parameters(
         self, tmp_path: Path
     ) -> None:
-        raise NotImplementedError(_HANDLE_INIT_RUN_REASON)
+        temp_dir = str(tmp_path)
+        rec = _IntegrationCtx(temp_dir)
+
+        result = handle_init_run(
+            {
+                "run_id": "explicit-run",
+                "project_root": temp_dir,
+                "run_parameters": {
+                    "run_name": "explicit-test",
+                    "phase_model": "sonnet-4-6",
+                },
+            },
+            rec.ctx,
+        )
+        parsed = json.loads(result.json)
+
+        assert parsed["run_parameters"]["run_name"] == "explicit-test"
+        assert parsed["run_parameters"]["phase_model"] == "sonnet-4-6"
+
+        disk = load_run_state(os.path.join(temp_dir, "runs", "explicit-run"))
+        assert disk is not None
+        assert disk.run_parameters == {
+            "run_name": "explicit-test",
+            "phase_model": "sonnet-4-6",
+        }
 
     def test_pre_init_hook_emits_parameters_and_no_user_override(
         self, tmp_path: Path
     ) -> None:
-        raise NotImplementedError(_HANDLE_INIT_RUN_REASON)
+        temp_dir = str(tmp_path)
+        rec = _IntegrationCtx(
+            temp_dir,
+            hooks=[
+                HookConfig(
+                    trigger="pre_pipeline_init", command="hooks/anything.js"
+                )
+            ],
+            pre_init_result=PreInitHookResult(
+                parameters={"run_name": "hook-default", "phase_model": "opus"},
+                userPrompts=[],
+            ),
+        )
+
+        result = handle_init_run(
+            {"run_id": "hook-run", "project_root": temp_dir}, rec.ctx
+        )
+        parsed = json.loads(result.json)
+
+        assert parsed["run_parameters"]["run_name"] == "hook-default"
+        assert parsed["run_parameters"]["phase_model"] == "opus"
+
+        disk = load_run_state(os.path.join(temp_dir, "runs", "hook-run"))
+        assert disk is not None
+        assert disk.run_parameters is not None
+        assert disk.run_parameters["run_name"] == "hook-default"
+        assert disk.run_parameters["phase_model"] == "opus"
 
     def test_pre_init_hook_parameters_merged_with_explicit_args_user_wins(
         self, tmp_path: Path
     ) -> None:
-        raise NotImplementedError(_HANDLE_INIT_RUN_REASON)
+        temp_dir = str(tmp_path)
+        rec = _IntegrationCtx(
+            temp_dir,
+            hooks=[
+                HookConfig(
+                    trigger="pre_pipeline_init", command="hooks/anything.js"
+                )
+            ],
+            pre_init_result=PreInitHookResult(
+                parameters={"phase_model": "opus", "target_feature": "from-hook"},
+                userPrompts=[],
+            ),
+        )
+
+        result = handle_init_run(
+            {
+                "run_id": "merge-run",
+                "project_root": temp_dir,
+                "run_parameters": {"phase_model": "sonnet"},
+            },
+            rec.ctx,
+        )
+        parsed = json.loads(result.json)
+
+        # User's phase_model wins; hook's target_feature is preserved.
+        assert parsed["run_parameters"]["phase_model"] == "sonnet"
+        assert parsed["run_parameters"]["target_feature"] == "from-hook"
+
+        disk = load_run_state(os.path.join(temp_dir, "runs", "merge-run"))
+        assert disk is not None
+        assert disk.run_parameters is not None
+        assert disk.run_parameters["phase_model"] == "sonnet"
+        assert disk.run_parameters["target_feature"] == "from-hook"
 
     def test_pre_init_hook_requests_user_input_with_no_params_short_circuits(
         self, tmp_path: Path
     ) -> None:
-        raise NotImplementedError(_HANDLE_INIT_RUN_REASON)
+        temp_dir = str(tmp_path)
+        rec = _IntegrationCtx(
+            temp_dir,
+            hooks=[
+                HookConfig(
+                    trigger="pre_pipeline_init", command="hooks/anything.js"
+                )
+            ],
+            pre_init_result=PreInitHookResult(
+                parameters={}, userPrompts=["What is run_name?"]
+            ),
+        )
+
+        result = handle_init_run(
+            {"run_id": "short-circuit-run", "project_root": temp_dir}, rec.ctx
+        )
+        envelope = json.loads(result.json)
+
+        assert envelope["status"] == "ok"
+        assert envelope["data"]["status"] == "user_input_required"
+        assert envelope["data"]["prompts"] == ["What is run_name?"]
+        assert envelope["data"]["partial_parameters"] == {}
+        assert "run_parameters" in envelope["next_step"]
+
+        # Critical: NO run state was written to disk.
+        disk_path = os.path.join(
+            temp_dir, "runs", "short-circuit-run", "run-state.json"
+        )
+        assert not os.path.exists(disk_path)
+
+        # And the active run on the ctx must still be None.
+        assert rec.active_run[0] is None
 
     def test_pre_init_hook_requests_user_input_but_params_provided_proceeds(
         self, tmp_path: Path
     ) -> None:
-        raise NotImplementedError(_HANDLE_INIT_RUN_REASON)
+        temp_dir = str(tmp_path)
+        rec = _IntegrationCtx(
+            temp_dir,
+            hooks=[
+                HookConfig(
+                    trigger="pre_pipeline_init", command="hooks/anything.js"
+                )
+            ],
+            pre_init_result=PreInitHookResult(
+                parameters={}, userPrompts=["What is run_name?"]
+            ),
+        )
+
+        result = handle_init_run(
+            {
+                "run_id": "supplied-run",
+                "project_root": temp_dir,
+                "run_parameters": {"run_name": "supplied"},
+            },
+            rec.ctx,
+        )
+        parsed = json.loads(result.json)
+
+        assert parsed["run_id"] == "supplied-run"
+        assert parsed["run_parameters"]["run_name"] == "supplied"
+
+        disk = load_run_state(os.path.join(temp_dir, "runs", "supplied-run"))
+        assert disk is not None
+        assert disk.run_parameters is not None
+        assert disk.run_parameters["run_name"] == "supplied"
 
 
 # ── run-state.initRun — run_parameters persistence ──────────

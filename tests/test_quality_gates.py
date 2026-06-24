@@ -39,7 +39,22 @@ from typing import Any
 
 import pytest
 
-from pipeline_orchestrator.models import ArtifactRef, QualityCheck, QualityGate
+from pipeline_orchestrator.dag import InputSatisfaction
+from pipeline_orchestrator.errors import ErrorClass, PipelineError
+from pipeline_orchestrator.hooks import PreInitHookResult
+from pipeline_orchestrator.models import (
+    ArtifactRef,
+    DebateConfig,
+    DebateOutputConfig,
+    KBDefaults,
+    PhaseDefinition,
+    PipelineConfig,
+    PipelineMeta,
+    QualityCheck,
+    QualityGate,
+    RunState,
+    StorageConfig,
+)
 from pipeline_orchestrator.quality_gates import (
     check_cross_ref_valid,
     check_field_present,
@@ -49,12 +64,20 @@ from pipeline_orchestrator.quality_gates import (
     run_gate_checks,
 )
 from pipeline_orchestrator.run_state import (
+    RecommendedAction,
+    RecoveryResult,
     add_artifact,
+    complete_phase,
     init_run,
     load_run_state,
     remove_phase_artifacts,
+    start_phase,
 )
 from pipeline_orchestrator.toml_loader import load_quality_gates
+from pipeline_orchestrator.tools.lifecycle_tools import (
+    LifecycleContext,
+    handle_complete_phase,
+)
 
 # ── Fixtures / helpers ────────────────────────────────────────────────
 
@@ -639,36 +662,300 @@ class TestBundledQualityGatesToml:
 
 # ── gate_evaluated events (Fix 3.6) ──────────────────────────────────
 #
-# These 3 cases drive ``handleCompletePhase`` from ``lifecycle-handlers.ts`` —
+# These 3 cases drive ``handle_complete_phase`` from ``lifecycle_tools.py`` —
 # the gate-enforcement wiring (one ``gate_evaluated`` event per check, atomic
 # ``remove_phase_artifacts`` rollback before raising ``gate_blocked``,
-# warn-collects-warnings). That layer is a **T6.2** deliverable (roadmap Fix 3.6
-# lives in ``lifecycle-handlers.ts``/``artifact-handlers.ts``, NOT
-# ``quality-gates.ts``). They are ported here 1:1 but skipped until the
-# lifecycle handler (``handle_complete_phase``) and its event emission land in
-# T6.2; the pure gate engine they exercise is fully covered by the isolation
-# cases above.
-
-_FIX_36_REASON = (
-    "T6.2: gate_evaluated event emission + gate_blocked rollback wiring lives in "
-    "the lifecycle-handler layer (handle_complete_phase), not the T2.4 gate "
-    "engine. Ported 1:1 and unskipped when lifecycle_handlers lands."
-)
+# warn-collects-warnings). Unskipped at T6.2 when ``handle_complete_phase`` and
+# its event emission landed; ported 1:1 against the TS oracle.
 
 
-@pytest.mark.skip(reason=_FIX_36_REASON)
+def _make_gate_test_config() -> PipelineConfig:
+    """Minimal single-phase (curation) PipelineConfig (Node ``makeGateTestConfig``)."""
+    phases = {
+        "curation": PhaseDefinition(
+            id=0,
+            description="",
+            inputs=[],
+            outputs=["curated-collection"],
+            tools=[],
+            entry_point=True,
+            optional=False,
+        ),
+    }
+    return PipelineConfig(
+        pipeline=PipelineMeta(id="gate-evt-test", version="1.0.0", description=""),
+        phases=phases,
+        edges=[],
+        debate=DebateConfig(
+            agents={},
+            rounds={},
+            output=DebateOutputConfig(
+                includes_transcript=True,
+                includes_refined_artifact=True,
+                artifact_version_bump="minor",
+            ),
+        ),
+        knowledge_bases=KBDefaults(
+            available_in=[], max_queries_per_phase=20, query_mode="proactive"
+        ),
+        schemas={},
+        storage=StorageConfig(base_dir="test", paths={}),
+    )
+
+
+def _make_gate_test_ctx(
+    initial_state: RunState,
+    state_dir: str,
+    gates: list[QualityGate],
+) -> LifecycleContext:
+    """Real-backed LifecycleContext wrapping run-state helpers + a gate list.
+
+    ``run_gate_checks`` remains the real pure implementation (Node
+    ``makeGateTestCtx``). ``active_run`` / ``active_run_dir`` are held in
+    single-element lists so the callables can rebind them.
+    """
+    active_run: list[RunState | None] = [initial_state]
+    active_run_dir: list[str] = [state_dir]
+
+    def _set_active_run(s: RunState) -> None:
+        active_run[0] = s
+
+    def _complete_phase(s: RunState, phase: str, d: str) -> RunState:
+        updated = complete_phase(s, phase, d)
+        active_run[0] = updated
+        return updated
+
+    def _phase_input_sat(
+        phase: PhaseDefinition, _types: list[str]
+    ) -> InputSatisfaction:
+        return InputSatisfaction(satisfied=[], missing=phase.inputs, can_run=True)
+
+    return LifecycleContext(
+        get_active_run=lambda: active_run[0],
+        set_active_run=_set_active_run,
+        get_active_run_dir=lambda: active_run_dir[0],
+        set_active_run_dir=lambda d: active_run_dir.__setitem__(0, d),
+        get_config=lambda: _make_gate_test_config(),
+        set_project_root=lambda _root: None,
+        get_storage_config=lambda *_a, **_k: StorageConfig(
+            base_dir=state_dir, paths={}
+        ),
+        init_run=lambda *_a, **_k: initial_state,
+        skip_phase=lambda s, _p, _d: s,
+        add_artifact=lambda s, ref, d: add_artifact(s, ref, d),
+        start_phase=lambda s, phase, d: start_phase(s, phase, d),
+        complete_phase=_complete_phase,
+        fail_phase=lambda s, _p, _e, _d: s,
+        retry_phase=lambda s, _p, _d: s,
+        resolve_next_phases=lambda *_a: [],
+        get_phase_input_satisfaction=_phase_input_sat,
+        load_run_state=lambda _d: None,
+        recover_run=lambda _d: RecoveryResult(
+            state=initial_state, recovered_phases=[], warnings=[]
+        ),
+        remove_phase_artifacts=lambda s, phase, d: remove_phase_artifacts(
+            s, phase, d
+        ),
+        get_quality_gates=lambda: gates,
+        run_gate_checks=lambda gate, refs: run_gate_checks(gate, refs),
+        get_hooks_config=lambda: [],
+        run_hooks=lambda *_a: [],
+        run_pre_pipeline_init_hooks=lambda *_a: PreInitHookResult(
+            parameters={}, userPrompts=[]
+        ),
+        get_project_root=lambda: None,
+        compute_recommended_action=lambda *_a: RecommendedAction(
+            action="review", reason=""
+        ),
+        compute_run_warnings=lambda *_a, **_k: [],
+    )
+
+
+def _read_events(run_dir: str) -> list[dict[str, Any]]:
+    """Parse events.jsonl into a list of dicts (Node ``readEvents``)."""
+    events_path = os.path.join(run_dir, "events.jsonl")
+    if not os.path.exists(events_path):
+        return []
+    with open(events_path, encoding="utf-8") as fh:
+        content = fh.read()
+    events: list[dict[str, Any]] = []
+    for line in content.split("\n"):
+        trimmed = line.strip()
+        if not trimmed:
+            continue
+        try:
+            events.append(json.loads(trimmed))
+        except (json.JSONDecodeError, ValueError):
+            continue
+    return events
+
+
 class TestGateEvaluatedEventsFix36:
     def test_writes_one_gate_evaluated_event_per_check_for_passing_gate(
         self, temp_dir: str
     ) -> None:
-        raise NotImplementedError(_FIX_36_REASON)
+        # Arrange: artifact on disk that satisfies both checks.
+        artifact_path = os.path.join(temp_dir, "curated.json")
+        _write_json(artifact_path, {"sources": ["s1", "s2"], "items": [1, 2, 3]})
+
+        state = init_run("gate-evt-pass", "1.0.0", ["curation"], temp_dir)
+        state = start_phase(state, "curation", temp_dir)
+        state = add_artifact(
+            state,
+            ArtifactRef(
+                type="curated-collection",
+                path=artifact_path,
+                phase="curation",
+                created_at=_now_iso(),
+            ),
+            temp_dir,
+        )
+
+        gate = QualityGate(
+            phase="curation",
+            on_failure="block",
+            checks=[
+                QualityCheck(
+                    check_type="field_present",
+                    description="sources present",
+                    params={
+                        "field": "sources",
+                        "artifact_type": "curated-collection",
+                    },
+                ),
+                QualityCheck(
+                    check_type="min_items",
+                    description="min items",
+                    params={
+                        "field": "items",
+                        "min": 1,
+                        "artifact_type": "curated-collection",
+                    },
+                ),
+            ],
+        )
+
+        ctx = _make_gate_test_ctx(state, temp_dir, [gate])
+
+        handle_complete_phase({"phase": "curation"}, ctx)
+
+        events = _read_events(temp_dir)
+        gate_events = [
+            e
+            for e in events
+            if e.get("event") == "gate_evaluated" and e.get("phase") == "curation"
+        ]
+        assert len(gate_events) == 2
+
+        for evt in gate_events:
+            details = evt["details"]
+            assert details["gate_name"] == "curation"
+            assert details["result"] == "pass"
+            assert details["artifact_type"] == "curated-collection"
+
+        check_types = sorted(e["details"]["check_type"] for e in gate_events)
+        assert check_types == ["field_present", "min_items"]
 
     def test_writes_gate_evaluated_events_fail_before_blocking_gate_throws(
         self, temp_dir: str
     ) -> None:
-        raise NotImplementedError(_FIX_36_REASON)
+        # Artifact missing the required field so field_present fails.
+        artifact_path = os.path.join(temp_dir, "curated-bad.json")
+        _write_json(artifact_path, {"items": [1]})
+
+        state = init_run("gate-evt-fail", "1.0.0", ["curation"], temp_dir)
+        state = start_phase(state, "curation", temp_dir)
+        state = add_artifact(
+            state,
+            ArtifactRef(
+                type="curated-collection",
+                path=artifact_path,
+                phase="curation",
+                created_at=_now_iso(),
+            ),
+            temp_dir,
+        )
+
+        gate = QualityGate(
+            phase="curation",
+            on_failure="block",
+            checks=[
+                QualityCheck(
+                    check_type="field_present",
+                    description="sources present",
+                    params={
+                        "field": "sources",
+                        "artifact_type": "curated-collection",
+                    },
+                ),
+            ],
+        )
+
+        ctx = _make_gate_test_ctx(state, temp_dir, [gate])
+
+        with pytest.raises(PipelineError) as exc_info:
+            handle_complete_phase({"phase": "curation"}, ctx)
+        assert exc_info.value.error_class == ErrorClass.gate_blocked
+
+        events = _read_events(temp_dir)
+        gate_events = [
+            e
+            for e in events
+            if e.get("event") == "gate_evaluated" and e.get("phase") == "curation"
+        ]
+        assert len(gate_events) == 1
+        details = gate_events[0]["details"]
+        assert details["gate_name"] == "curation"
+        assert details["check_type"] == "field_present"
+        assert details["result"] == "fail"
+        assert details["artifact_type"] == "curated-collection"
 
     def test_writes_gate_evaluated_events_warn_for_warn_mode_failure(
         self, temp_dir: str
     ) -> None:
-        raise NotImplementedError(_FIX_36_REASON)
+        artifact_path = os.path.join(temp_dir, "curated-warn.json")
+        _write_json(artifact_path, {"items": []})
+
+        state = init_run("gate-evt-warn", "1.0.0", ["curation"], temp_dir)
+        state = start_phase(state, "curation", temp_dir)
+        state = add_artifact(
+            state,
+            ArtifactRef(
+                type="curated-collection",
+                path=artifact_path,
+                phase="curation",
+                created_at=_now_iso(),
+            ),
+            temp_dir,
+        )
+
+        gate = QualityGate(
+            phase="curation",
+            on_failure="warn",
+            checks=[
+                QualityCheck(
+                    check_type="min_items",
+                    description="min items",
+                    params={
+                        "field": "items",
+                        "min": 1,
+                        "artifact_type": "curated-collection",
+                    },
+                ),
+            ],
+        )
+
+        ctx = _make_gate_test_ctx(state, temp_dir, [gate])
+
+        # warn-mode: must NOT throw; should return an envelope + still emit event.
+        handle_complete_phase({"phase": "curation"}, ctx)
+
+        events = _read_events(temp_dir)
+        gate_events = [
+            e
+            for e in events
+            if e.get("event") == "gate_evaluated" and e.get("phase") == "curation"
+        ]
+        assert len(gate_events) == 1
+        details = gate_events[0]["details"]
+        assert details["result"] == "warn"
