@@ -81,6 +81,7 @@ from pipeline_orchestrator.storage import (
     get_artifact_dir,
     storage_key_to_subtype,
 )
+from pipeline_orchestrator.tools._envelope import tool_result
 from pipeline_orchestrator.tools.lifecycle_tools import append_event
 from pipeline_orchestrator.validator import SchemaMap, ValidationResult
 
@@ -1027,9 +1028,38 @@ def register_artifact_tools(mcp: FastMCP) -> None:
     DI context is wired by the global seam later (T6.5) -- this function only makes
     the tools enumerate correctly on ``tools/list``.
 
-    NOT called from ``tools/__init__.py`` yet: the global ``register_tools``
-    handshake stays at 0 tools until the wiring task.
+    Wired into ``tools/__init__.py``: the global ``register_tools`` seam fans
+    out to this registrar so the tools dispatch through their handlers (T6.7).
     """
+    from pipeline_orchestrator import run_state, storage, validator
+    from pipeline_orchestrator.server import state
+
+    artifact_ctx = ArtifactContext(
+        get_schemas=state.schemas,
+        validate_artifact=validator.validate_artifact,
+        store_artifact=storage.store_artifact,
+        load_artifact=storage.load_artifact,
+        list_artifacts=storage.list_artifacts,
+        build_artifact_summary=storage.build_artifact_summary,
+        get_storage_config=state.get_storage_config,
+        base_dir_from_run_dir=state.base_dir_from_run_dir,
+        get_project_root=state.project_root,
+        get_config_storage_base_dir=lambda: state.config_storage_base_dir(),
+        get_active_run=lambda: state.active_run,
+        set_active_run=lambda s: setattr(state, "active_run", s),
+        get_active_run_dir=lambda: state.active_run_dir,
+        require_run=state.require_run,
+        add_artifact=run_state.add_artifact,
+        persist_artifact=state.persist_artifact,
+    )
+    scaffold_register_ctx = RegisterScaffoldOutputsContext(
+        require_run=state.require_run,
+        set_active_run=lambda s: setattr(state, "active_run", s),
+        get_active_run=lambda: state.active_run,
+        get_active_run_dir=lambda: state.active_run_dir,
+        base_dir_from_run_dir=state.base_dir_from_run_dir,
+        add_artifact=run_state.add_artifact,
+    )
 
     @mcp.tool(
         name="pipeline_validate_artifact",
@@ -1042,12 +1072,18 @@ def register_artifact_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(readOnlyHint=True),
         meta={"max_result_chars": _READ_MAX},
     )
+    @tool_result
     def pipeline_validate_artifact(
         schema: str,
         artifact: dict[str, object] | None = None,
         file_path: str | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, Any] = {"schema": schema}
+        if artifact is not None:
+            args["artifact"] = artifact
+        if file_path is not None:
+            args["file_path"] = file_path
+        return handle_validate_artifact(args, artifact_ctx)
 
     @mcp.tool(
         name="pipeline_store_artifact",
@@ -1061,6 +1097,7 @@ def register_artifact_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(destructiveHint=True),
         meta={"max_result_chars": _MUTATE_MAX},
     )
+    @tool_result
     def pipeline_store_artifact(
         storage_key: str,
         file_name: str,
@@ -1070,8 +1107,22 @@ def register_artifact_tools(mcp: FastMCP) -> None:
         file_path: str | None = None,
         force: bool | None = None,
         parent_artifact: str | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, Any] = {
+            "storage_key": storage_key,
+            "file_name": file_name,
+            "artifact_type": artifact_type,
+            "phase": phase,
+        }
+        if artifact is not None:
+            args["artifact"] = artifact
+        if file_path is not None:
+            args["file_path"] = file_path
+        if force is not None:
+            args["force"] = force
+        if parent_artifact is not None:
+            args["parent_artifact"] = parent_artifact
+        return handle_store_artifact(args, artifact_ctx)
 
     @mcp.tool(
         name="pipeline_register_artifact",
@@ -1085,14 +1136,23 @@ def register_artifact_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(destructiveHint=True),
         meta={"max_result_chars": _MUTATE_MAX},
     )
+    @tool_result
     def pipeline_register_artifact(
         file_path: str,
         artifact_type: str,
         phase: str,
         storage_key: str,
         validate: bool | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, Any] = {
+            "file_path": file_path,
+            "artifact_type": artifact_type,
+            "phase": phase,
+            "storage_key": storage_key,
+        }
+        if validate is not None:
+            args["validate"] = validate
+        return handle_register_artifact(args, artifact_ctx)
 
     @mcp.tool(
         name="pipeline_register_scaffold_outputs",
@@ -1107,11 +1167,17 @@ def register_artifact_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(destructiveHint=True),
         meta={"max_result_chars": _MUTATE_MAX},
     )
+    @tool_result
     def pipeline_register_scaffold_outputs(
         scaffold_dir: str | None = None,
         phase: str | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, Any] = {}
+        if scaffold_dir is not None:
+            args["scaffold_dir"] = scaffold_dir
+        if phase is not None:
+            args["phase"] = phase
+        return handle_register_scaffold_outputs(args, scaffold_register_ctx)
 
     @mcp.tool(
         name="pipeline_load_artifact",
@@ -1125,14 +1191,25 @@ def register_artifact_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(readOnlyHint=True),
         meta={"max_result_chars": _READ_MAX},
     )
+    @tool_result
     def pipeline_load_artifact(
         storage_key: str,
         file_name: str,
         inline: bool | None = None,
         full: bool | None = None,
         fields: list[str] | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, Any] = {
+            "storage_key": storage_key,
+            "file_name": file_name,
+        }
+        if inline is not None:
+            args["inline"] = inline
+        if full is not None:
+            args["full"] = full
+        if fields is not None:
+            args["fields"] = fields
+        return handle_load_artifact(args, artifact_ctx)
 
     @mcp.tool(
         name="pipeline_list_artifacts",
@@ -1140,7 +1217,9 @@ def register_artifact_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(readOnlyHint=True),
         meta={"max_result_chars": _READ_MAX},
     )
+    @tool_result
     def pipeline_list_artifacts(
         storage_key: str,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, Any] = {"storage_key": storage_key}
+        return handle_list_artifacts(args, artifact_ctx)

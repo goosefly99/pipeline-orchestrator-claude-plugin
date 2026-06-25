@@ -37,12 +37,14 @@ Parity notes:
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from mcp.types import ToolAnnotations
 
+from pipeline_orchestrator import collections_store, synth
 from pipeline_orchestrator.collections_store import FieldMap, ResearchItem
 from pipeline_orchestrator.models import DesignSpec, HandlerResponse
 from pipeline_orchestrator.synth import (
@@ -51,6 +53,7 @@ from pipeline_orchestrator.synth import (
     list_specs,
     save_spec,
 )
+from pipeline_orchestrator.tools._envelope import tool_result
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -372,7 +375,7 @@ def handle_synth_list_specs(
     return HandlerResponse(json="\n".join(lines))
 
 
-# ── Tool registration (NOT wired into the global seam yet — T6.5) ────
+# ── Tool registration (wired into the global register_tools seam) ───
 
 _READ_MAX = 50000
 _MUTATE_MAX = 10000
@@ -388,15 +391,55 @@ def register_synth_tools(mcp: FastMCP) -> None:
     handlers; the real DI context is wired by the global seam later (T6.5) —
     this function only makes the tools enumerate correctly on ``tools/list``.
 
-    NOT called from ``tools/__init__.py`` yet: the global ``register_tools``
-    handshake stays at 0 tools until the wiring task.
+    Wired into ``tools/__init__.py``: the global ``register_tools`` seam fans
+    out to this registrar so the tools dispatch through their handlers (T6.7).
     """
+
+    from pipeline_orchestrator.server import state  # noqa: PLC0415
+
+    def _get_specs_dir() -> str:
+        try:
+            cfg = state.config()
+            paths = cfg.storage.paths if cfg.storage is not None else None
+            specs = paths.get("specs", "specs") if paths else "specs"
+            base_dir = cfg.storage.base_dir if cfg.storage is not None else ""
+            return os.path.realpath(
+                os.path.join(state.project_root(), base_dir, specs)
+            )
+        except Exception:  # noqa: BLE001 — legacy synthCtx.getSpecsDir try/catch
+            return os.path.realpath("./specs")
+
+    def _persist_spec(
+        spec: DesignSpec, output_dir_override: str | None = None
+    ) -> str:
+        legacy_base_dir = (
+            state.base_dir_from_run_dir(state.active_run_dir)
+            if state.active_run is not None
+            else os.path.realpath(
+                os.path.join(state.project_root(), state.config_storage_base_dir())
+            )
+        )
+        run_data_dir = (
+            state.active_run.run_data_dir if state.active_run is not None else None
+        )
+        return synth.persist_spec(
+            run_data_dir, legacy_base_dir, spec, output_dir_override
+        )
+
+    synth_ctx = SynthContext(
+        load_collection=collections_store.load_collection,
+        query_items=collections_store.query_items,
+        get_items=collections_store.get_items,
+        get_specs_dir=_get_specs_dir,
+        persist_spec=_persist_spec,
+    )
 
     @mcp.tool(
         name="pipeline_synth_load_collection",
         description="Load a research collection from a JSON file into the store.",
         meta={"max_result_chars": _MUTATE_MAX},
     )
+    @tool_result
     def pipeline_synth_load_collection(
         file_path: str,
         name: str | None = None,
@@ -405,8 +448,21 @@ def register_synth_tools(mcp: FastMCP) -> None:
         content_field: str | None = None,
         title_field: str | None = None,
         tags_field: str | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, object] = {"file_path": file_path}
+        if name is not None:
+            args["name"] = name
+        if items_key is not None:
+            args["items_key"] = items_key
+        if id_field is not None:
+            args["id_field"] = id_field
+        if content_field is not None:
+            args["content_field"] = content_field
+        if title_field is not None:
+            args["title_field"] = title_field
+        if tags_field is not None:
+            args["tags_field"] = tags_field
+        return handle_synth_load_collection(args, synth_ctx)
 
     @mcp.tool(
         name="pipeline_synth_query",
@@ -414,14 +470,26 @@ def register_synth_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(readOnlyHint=True),
         meta={"max_result_chars": _READ_MAX},
     )
+    @tool_result
     def pipeline_synth_query(
         collection: str | None = None,
         tags: list[str] | None = None,
         search: str | None = None,
         fields: dict[str, str] | None = None,
         limit: int | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, object] = {}
+        if collection is not None:
+            args["collection"] = collection
+        if tags is not None:
+            args["tags"] = tags
+        if search is not None:
+            args["search"] = search
+        if fields is not None:
+            args["fields"] = fields
+        if limit is not None:
+            args["limit"] = limit
+        return handle_synth_query(args, synth_ctx)
 
     @mcp.tool(
         name="pipeline_synth_get_items",
@@ -429,11 +497,16 @@ def register_synth_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(readOnlyHint=True),
         meta={"max_result_chars": _READ_MAX},
     )
+    @tool_result
     def pipeline_synth_get_items(
         collection: str,
         item_ids: list[str],
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, object] = {
+            "collection": collection,
+            "item_ids": item_ids,
+        }
+        return handle_synth_get_items(args, synth_ctx)
 
     @mcp.tool(
         name="pipeline_synth_create_spec",
@@ -441,14 +514,22 @@ def register_synth_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(destructiveHint=True),
         meta={"max_result_chars": _MUTATE_MAX},
     )
+    @tool_result
     def pipeline_synth_create_spec(
         title: str,
         items: list[dict[str, object]],
         spec_type: str | None = None,
         domain: str | None = None,
         focus: str | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, object] = {"title": title, "items": items}
+        if spec_type is not None:
+            args["spec_type"] = spec_type
+        if domain is not None:
+            args["domain"] = domain
+        if focus is not None:
+            args["focus"] = focus
+        return handle_synth_create_spec(args, synth_ctx)
 
     @mcp.tool(
         name="pipeline_synth_save_spec",
@@ -456,11 +537,15 @@ def register_synth_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(destructiveHint=True),
         meta={"max_result_chars": _MUTATE_MAX},
     )
+    @tool_result
     def pipeline_synth_save_spec(
         spec: dict[str, object],
         output_dir: str | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, object] = {"spec": spec}
+        if output_dir is not None:
+            args["output_dir"] = output_dir
+        return handle_synth_save_spec(args, synth_ctx)
 
     @mcp.tool(
         name="pipeline_synth_list_specs",
@@ -468,7 +553,11 @@ def register_synth_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(readOnlyHint=True),
         meta={"max_result_chars": _READ_MAX},
     )
+    @tool_result
     def pipeline_synth_list_specs(
         directory: str | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, object] = {}
+        if directory is not None:
+            args["directory"] = directory
+        return handle_synth_list_specs(args, synth_ctx)

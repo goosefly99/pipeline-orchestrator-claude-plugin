@@ -77,6 +77,7 @@ from pipeline_orchestrator.kb_client import (
     vector_search,
 )
 from pipeline_orchestrator.models import HandlerResponse
+from pipeline_orchestrator.tools._envelope import tool_result
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -391,7 +392,7 @@ def handle_kb_build_index(
     )
 
 
-# ── Tool registration (NOT wired into the global seam yet — T6.5) ────
+# ── Tool registration (wired into the global register_tools seam) ───
 
 _READ_MAX = 50000
 _MUTATE_MAX = 10000
@@ -408,9 +409,19 @@ def register_kb_tools(mcp: FastMCP) -> None:
     real DI context is wired by the global seam later (T6.5) — this function only
     makes the tools enumerate correctly on ``tools/list``.
 
-    NOT called from ``tools/__init__.py`` yet: the global ``register_tools``
-    handshake stays at its current count until the wiring task.
+    Wired into ``tools/__init__.py``: the global ``register_tools`` seam fans
+    out to this registrar so the tools dispatch through their handlers (T6.7).
     """
+    from pipeline_orchestrator.server import state
+
+    kb_ctx = KBContext(
+        get_project_root=state.project_root,
+        get_config_storage_base_dir=lambda: state.config_storage_base_dir(),
+        get_active_run=lambda: state.active_run,
+        get_active_run_dir=lambda: state.active_run_dir,
+        base_dir_from_run_dir=state.base_dir_from_run_dir,
+    )
+
 
     @mcp.tool(
         name="pipeline_kb_search",
@@ -421,14 +432,24 @@ def register_kb_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(readOnlyHint=True),
         meta={"max_result_chars": _READ_MAX},
     )
+    @tool_result
     async def pipeline_kb_search(
         run_id: str,
         phase: str,
         query: str,
         top_k: float | None = None,
         filter: dict[str, object] | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, object] = {
+            "run_id": run_id,
+            "phase": phase,
+            "query": query,
+        }
+        if top_k is not None:
+            args["top_k"] = top_k
+        if filter is not None:
+            args["filter"] = filter
+        return await handle_kb_search(args, kb_ctx)
 
     @mcp.tool(
         name="pipeline_kb_sql_query",
@@ -439,14 +460,23 @@ def register_kb_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(readOnlyHint=True),
         meta={"max_result_chars": _READ_MAX},
     )
+    @tool_result
     async def pipeline_kb_sql_query(
         kb_config: dict[str, object],
         run_id: str,
         phase: str,
         template_name: str,
         parameters: dict[str, object] | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, object] = {
+            "kb_config": kb_config,
+            "run_id": run_id,
+            "phase": phase,
+            "template_name": template_name,
+        }
+        if parameters is not None:
+            args["parameters"] = parameters
+        return await handle_kb_sql_query(args)
 
     @mcp.tool(
         name="pipeline_kb_build_index",
@@ -456,10 +486,12 @@ def register_kb_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(destructiveHint=True),
         meta={"max_result_chars": _MUTATE_MAX},
     )
+    @tool_result
     def pipeline_kb_build_index(
         collection_name: str,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, object] = {"collection_name": collection_name}
+        return handle_kb_build_index(args, kb_ctx)
 
     @mcp.tool(
         name="pipeline_kb_export_query_log",
@@ -470,9 +502,13 @@ def register_kb_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(readOnlyHint=True),
         meta={"max_result_chars": _READ_MAX},
     )
+    @tool_result
     def pipeline_kb_export_query_log(
         run_id: str,
         phase: str,
         debate_transcript_id: str | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, object] = {"run_id": run_id, "phase": phase}
+        if debate_transcript_id is not None:
+            args["debate_transcript_id"] = debate_transcript_id
+        return handle_kb_export_query_log(args)

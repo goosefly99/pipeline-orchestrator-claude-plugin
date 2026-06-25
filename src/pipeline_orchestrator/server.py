@@ -188,6 +188,17 @@ class ServerState:
             self._config = _config_mod.pipeline_config()
         return self._config
 
+    def config_storage_base_dir(self) -> str:
+        """Return ``config().storage.base_dir``, ``""`` when storage is absent.
+
+        The Python ``PipelineConfig.storage`` is ``StorageConfig | None`` whereas
+        the TS ``getConfig().storage.base_dir`` is non-null; this guarded accessor
+        mirrors the same fallback already used in :meth:`get_storage_config`, so
+        DI ctx bindings can read the base dir without repeating the None guard.
+        """
+        storage = self.config().storage
+        return storage.base_dir if storage is not None else ""
+
     def schemas(self) -> SchemaMap:
         """Load + cache the bundled JSON schemas (TS ``getSchemas``)."""
         if self._schemas is None:

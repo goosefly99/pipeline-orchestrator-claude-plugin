@@ -142,7 +142,23 @@ def _suppress_output_schema(
     are preserved — ``functools.wraps`` copied them and none of the above touches
     them.
     """
-    inner_sig = inspect.signature(inner)
+    # Resolve PEP 563 string annotations (the module uses
+    # ``from __future__ import annotations``, so the inner handler's param
+    # annotations arrive as strings). ``eval_str=True`` evaluates them
+    # against ``inner.__globals__`` — without this, pinning ``__signature__``
+    # below freezes the *string* annotations, and FastMCP (which honours an
+    # explicit ``__signature__`` and does NOT re-evaluate it) then hands a
+    # bare forward ref (e.g. a module-local ``Literal`` alias) to pydantic,
+    # which cannot resolve it from its own namespace and raises. Resolving
+    # here makes the wrapped tool's ``inputSchema`` build byte-identically to
+    # a bare (unwrapped) registration. Fall back to the unresolved signature
+    # if any annotation is not runtime-evaluable (e.g. a TYPE_CHECKING-only
+    # forward ref); builtins still resolve. The return annotation is blanked
+    # regardless, so the outputSchema suppression (R-H1) is unaffected.
+    try:
+        inner_sig = inspect.signature(inner, eval_str=True)
+    except (NameError, TypeError, AttributeError):
+        inner_sig = inspect.signature(inner)
     wrapper.__signature__ = inner_sig.replace(  # type: ignore[attr-defined]
         return_annotation=inspect.Signature.empty
     )

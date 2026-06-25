@@ -71,6 +71,7 @@ from pipeline_orchestrator.models import (
     HandlerResponse,
     RunState,
 )
+from pipeline_orchestrator.tools._envelope import tool_result
 from pipeline_orchestrator.validator import SchemaMap, ValidationResult
 
 if TYPE_CHECKING:
@@ -476,7 +477,7 @@ def handle_save_debate(
     )
 
 
-# ── Tool registration (NOT wired into the global seam yet — T6.5) ────
+# ── Tool registration (wired into the global register_tools seam) ───
 
 _MUTATE_MAX = 10000
 
@@ -491,9 +492,50 @@ def register_debate_tools(mcp: FastMCP) -> None:
     DI context is wired by the global seam later (T6.5) — this function only
     makes the tools enumerate correctly on ``tools/list``.
 
-    NOT called from ``tools/__init__.py`` yet: the global ``register_tools``
-    handshake stays at 0 tools until the wiring task.
+    Wired into ``tools/__init__.py``: the global ``register_tools`` seam fans
+    out to this registrar so the tools dispatch through their handlers (T6.7).
     """
+    from pipeline_orchestrator import debate, run_state, storage, validator
+    from pipeline_orchestrator.server import state
+
+    debate_ctx = DebateContext(
+        get_active_debate=lambda: state.active_debate,
+        set_active_debate=lambda s: setattr(state, "active_debate", s),
+    )
+
+    def _persist_debate(
+        transcript: object, file_name: str, force: bool | None = None
+    ) -> str:
+        legacy_base_dir = (
+            state.base_dir_from_run_dir(state.active_run_dir)
+            if state.active_run is not None
+            else os.path.realpath(
+                os.path.join(state.project_root(), state.config_storage_base_dir())
+            )
+        )
+        run_data_dir = (
+            state.active_run.run_data_dir if state.active_run is not None else None
+        )
+        return debate.persist_debate(
+            run_data_dir, legacy_base_dir, transcript, file_name, force
+        )
+
+    save_debate_ctx = SaveDebateContext(
+        get_active_debate=lambda: state.active_debate,
+        set_active_debate=lambda s: setattr(state, "active_debate", s),
+        validate_artifact=validator.validate_artifact,
+        get_schemas=state.schemas,
+        store_artifact=storage.store_artifact,
+        get_storage_config=state.get_storage_config,
+        base_dir_from_run_dir=state.base_dir_from_run_dir,
+        get_project_root=state.project_root,
+        get_config_storage_base_dir=lambda: state.config_storage_base_dir(),
+        get_active_run=lambda: state.active_run,
+        get_active_run_dir=lambda: state.active_run_dir,
+        add_artifact=run_state.add_artifact,
+        set_active_run=lambda s: setattr(state, "active_run", s),
+        persist_debate=_persist_debate,
+    )
 
     @mcp.tool(
         name="pipeline_init_debate",
@@ -505,6 +547,7 @@ def register_debate_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(destructiveHint=True),
         meta={"max_result_chars": _MUTATE_MAX},
     )
+    @tool_result
     def pipeline_init_debate(
         input_type: DebateInputType,
         input_id: str,
@@ -513,8 +556,20 @@ def register_debate_tools(mcp: FastMCP) -> None:
         artifact_path: str | None = None,
         codebase_requirements_id: str | None = None,
         domain_profile: object = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, object] = {
+            "input_type": input_type,
+            "input_id": input_id,
+            "input_version": input_version,
+            "artifact_content": artifact_content,
+        }
+        if artifact_path is not None:
+            args["artifact_path"] = artifact_path
+        if codebase_requirements_id is not None:
+            args["codebase_requirements_id"] = codebase_requirements_id
+        if domain_profile is not None:
+            args["domain_profile"] = domain_profile
+        return handle_init_debate(args, debate_ctx)
 
     @mcp.tool(
         name="pipeline_submit_argument",
@@ -522,6 +577,7 @@ def register_debate_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(destructiveHint=True),
         meta={"max_result_chars": _MUTATE_MAX},
     )
+    @tool_result
     def pipeline_submit_argument(
         role: AgentRole,
         position: str,
@@ -529,8 +585,19 @@ def register_debate_tools(mcp: FastMCP) -> None:
         evidence: list[str] | None = None,
         counterpoints: list[str] | None = None,
         proposed_changes: list[str] | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, object] = {
+            "role": role,
+            "position": position,
+            "confidence": confidence,
+        }
+        if evidence is not None:
+            args["evidence"] = evidence
+        if counterpoints is not None:
+            args["counterpoints"] = counterpoints
+        if proposed_changes is not None:
+            args["proposed_changes"] = proposed_changes
+        return handle_submit_argument(args, debate_ctx)
 
     @mcp.tool(
         name="pipeline_synthesize_debate",
@@ -542,14 +609,25 @@ def register_debate_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(destructiveHint=True),
         meta={"max_result_chars": _MUTATE_MAX},
     )
+    @tool_result
     def pipeline_synthesize_debate(
         changes_accepted: list[str],
         changes_rejected: list[dict[str, str]],
         open_questions: list[str] | None = None,
         output_version: str | None = None,
         kb_queries_used: bool | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, object] = {
+            "changes_accepted": changes_accepted,
+            "changes_rejected": changes_rejected,
+        }
+        if open_questions is not None:
+            args["open_questions"] = open_questions
+        if output_version is not None:
+            args["output_version"] = output_version
+        if kb_queries_used is not None:
+            args["kb_queries_used"] = kb_queries_used
+        return handle_synthesize_debate(args, debate_ctx)
 
     @mcp.tool(
         name="pipeline_save_debate",
@@ -560,8 +638,10 @@ def register_debate_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(destructiveHint=True),
         meta={"max_result_chars": _MUTATE_MAX},
     )
+    @tool_result
     def pipeline_save_debate(
         file_name: str,
         phase: str,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, object] = {"file_name": file_name, "phase": phase}
+        return handle_save_debate(args, save_debate_ctx)

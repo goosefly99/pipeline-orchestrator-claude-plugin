@@ -65,7 +65,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from mcp.types import ToolAnnotations
 
@@ -74,6 +74,7 @@ from pipeline_orchestrator.errors import ErrorClass, PipelineError
 from pipeline_orchestrator.handoff import generate_handoff
 from pipeline_orchestrator.models import (
     ArtifactRef,
+    EdgeDefinition,
     HandlerResponse,
     PhaseDefinition,
     PipelineConfig,
@@ -91,7 +92,7 @@ from pipeline_orchestrator.run_state import (
     get_completed_phases,
     get_skipped_phases,
 )
-from pipeline_orchestrator.tools._envelope import ResponseEnvelope
+from pipeline_orchestrator.tools._envelope import ResponseEnvelope, tool_result
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -1280,7 +1281,105 @@ def handle_phase_brief(
     )
 
 
-# ── Tool registration (NOT wired into the global seam yet — T6.5) ────
+# ── pipeline_get_config (port of TS handleGetConfig, misc-handlers.ts) ─
+
+
+@dataclass
+class GetConfigContext:
+    """DI object for :func:`handle_get_config` (TS ``GetConfigContext``).
+
+    Mirrors the TS ``getConfigCtx`` (server.ts): the nullable project root, the
+    bundled pipeline directory, and the lazily-parsed pipeline config.
+    """
+
+    get_project_root: Callable[[], str | None]
+    get_pipeline_dir: Callable[[], str]
+    get_config: Callable[[], PipelineConfig]
+
+
+def _phase_to_config_dict(name: str, p: PhaseDefinition) -> dict[str, Any]:
+    """Build the per-phase dict for ``handle_get_config`` (TS ``handleGetConfig``).
+
+    Mirrors the TS object literal field-for-field; ``input_mode`` / ``optional``
+    / ``model_tier`` are ``undefined`` in TS when unset and dropped by
+    ``JSON.stringify``, so they are omitted here when ``None`` (undefined-drop
+    parity, §4.2).
+    """
+    out: dict[str, Any] = {
+        "name": name,
+        "id": p.id,
+        "description": p.description,
+        "inputs": p.inputs,
+        "outputs": p.outputs,
+    }
+    if p.input_mode is not None:
+        out["input_mode"] = p.input_mode
+    out["entry_point"] = p.entry_point
+    if p.optional is not None:
+        out["optional"] = p.optional
+    if p.model_tier is not None:
+        out["model_tier"] = p.model_tier
+    return out
+
+
+def _edge_to_config_dict(edge: EdgeDefinition) -> dict[str, Any]:
+    """Serialize an :class:`EdgeDefinition` for ``handle_get_config``.
+
+    The TS wire key is ``from`` (not the Python-reserved ``from_``); the ``?:``
+    optionals (``note`` / ``optional`` / ``input_as`` / ``when_input``) are
+    ``undefined`` when unset and dropped by ``JSON.stringify``, so they are
+    omitted here when ``None`` (undefined-drop parity, §4.2).
+    """
+    out: dict[str, Any] = {"from": edge.from_, "to": edge.to}
+    if edge.note is not None:
+        out["note"] = edge.note
+    if edge.optional is not None:
+        out["optional"] = edge.optional
+    if edge.input_as is not None:
+        out["input_as"] = edge.input_as
+    if edge.when_input is not None:
+        out["when_input"] = edge.when_input
+    return out
+
+
+def handle_get_config(ctx: GetConfigContext) -> HandlerResponse:
+    """Return the pipeline configuration (port of TS ``handleGetConfig``).
+
+    Byte-exact to ``misc-handlers.ts``: serialize ``project_root`` (falling back
+    to the literal ``'(not set — call pipeline_init_run first)'`` when unset),
+    ``pipeline_dir``, ``pipeline``, the per-phase list, ``edges``, ``schemas``,
+    and ``storage`` as ``json.dumps(..., indent=2)`` (2-space pretty, §4.2).
+    """
+    cfg = ctx.get_config()
+    storage = cfg.storage
+    payload: dict[str, Any] = {
+        "project_root": (
+            ctx.get_project_root()
+            or "(not set — call pipeline_init_run first)"
+        ),
+        "pipeline_dir": ctx.get_pipeline_dir(),
+        "pipeline": {
+            "id": cfg.pipeline.id,
+            "version": cfg.pipeline.version,
+            "description": cfg.pipeline.description,
+        },
+        "phases": [
+            _phase_to_config_dict(name, p) for name, p in cfg.phases.items()
+        ],
+        "edges": [_edge_to_config_dict(e) for e in cfg.edges],
+        "schemas": cfg.schemas,
+        "storage": (
+            {"base_dir": storage.base_dir, "paths": storage.paths}
+            if storage is not None
+            else None
+        ),
+    }
+    return HandlerResponse(
+        json=json.dumps(payload, indent=2, ensure_ascii=False)
+    )
+
+
+# ── Tool registration (wired into the global register_tools seam) ───
 
 _READ_MAX = 50000
 _MUTATE_MAX = 10000
@@ -1300,9 +1399,56 @@ def register_lifecycle_tools(mcp: FastMCP) -> None:
     is wired by the global seam later (T6.5) — this function only makes the tools
     enumerate correctly on ``tools/list``.
 
-    NOT called from ``tools/__init__.py`` yet: the global ``register_tools``
-    handshake stays at 0 tools until the wiring task.
+    Wired into ``tools/__init__.py``: the global ``register_tools`` seam fans
+    out to this registrar so the tools dispatch through their handlers (T6.7).
     """
+    # Import the live singleton + real module functions inside the
+    # registrar (not at module scope) to avoid any import cycle through
+    # ``server.py``. The ctx closures read LIVE ``state`` attributes
+    # (lambdas for the mutable/getter fields) so they never snapshot.
+    from pipeline_orchestrator import config as config_mod
+    from pipeline_orchestrator import dag, hooks, quality_gates, run_state
+    from pipeline_orchestrator.server import state
+
+    lifecycle_ctx = LifecycleContext(
+        get_config=state.config,
+        set_project_root=state.set_project_root,
+        get_storage_config=state.get_storage_config,
+        get_active_run=lambda: state.active_run,
+        set_active_run=lambda s: setattr(state, "active_run", s),
+        get_active_run_dir=lambda: state.active_run_dir,
+        set_active_run_dir=lambda d: setattr(state, "active_run_dir", d),
+        init_run=run_state.init_run,
+        skip_phase=run_state.skip_phase,
+        add_artifact=run_state.add_artifact,
+        start_phase=run_state.start_phase,
+        complete_phase=run_state.complete_phase,
+        fail_phase=run_state.fail_phase,
+        retry_phase=run_state.retry_phase,
+        resolve_next_phases=dag.resolve_next_phases,
+        get_phase_input_satisfaction=dag.get_phase_input_satisfaction,
+        load_run_state=run_state.load_run_state,
+        recover_run=run_state.recover_run,
+        remove_phase_artifacts=run_state.remove_phase_artifacts,
+        get_quality_gates=state.quality_gates,
+        run_gate_checks=quality_gates.run_gate_checks,
+        get_hooks_config=state.hooks_config,
+        run_hooks=cast(
+            "Callable[[list[Any], str, dict[str, Any], str], list[dict[str, Any]]]",
+            hooks.run_hooks,
+        ),
+        run_pre_pipeline_init_hooks=hooks.run_pre_pipeline_init_hooks,
+        get_project_root=state.project_root_or_none,
+        compute_recommended_action=run_state.compute_recommended_action,
+        compute_run_warnings=run_state.compute_run_warnings,
+    )
+    get_config_ctx = GetConfigContext(
+        get_project_root=state.project_root_or_none,
+        get_pipeline_dir=lambda: str(
+            config_mod.bundled_pipeline_toml_path().parent
+        ),
+        get_config=state.config,
+    )
 
     @mcp.tool(
         name="pipeline_get_config",
@@ -1313,8 +1459,9 @@ def register_lifecycle_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(readOnlyHint=True),
         meta={"max_result_chars": _READ_MAX},
     )
-    def pipeline_get_config() -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    @tool_result
+    def pipeline_get_config() -> HandlerResponse:
+        return handle_get_config(get_config_ctx)
 
     @mcp.tool(
         name="pipeline_init_run",
@@ -1325,6 +1472,7 @@ def register_lifecycle_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(destructiveHint=True),
         meta={"max_result_chars": _MUTATE_MAX},
     )
+    @tool_result
     def pipeline_init_run(
         run_id: str,
         project_root: str,
@@ -1332,8 +1480,20 @@ def register_lifecycle_tools(mcp: FastMCP) -> None:
         skip_phases: list[str] | None = None,
         initial_artifacts: list[dict[str, str]] | None = None,
         run_parameters: dict[str, object] | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, Any] = {
+            "run_id": run_id,
+            "project_root": project_root,
+        }
+        if base_dir is not None:
+            args["base_dir"] = base_dir
+        if skip_phases is not None:
+            args["skip_phases"] = skip_phases
+        if initial_artifacts is not None:
+            args["initial_artifacts"] = initial_artifacts
+        if run_parameters is not None:
+            args["run_parameters"] = run_parameters
+        return handle_init_run(args, lifecycle_ctx)
 
     @mcp.tool(
         name="pipeline_next_phases",
@@ -1344,10 +1504,14 @@ def register_lifecycle_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(readOnlyHint=True),
         meta={"max_result_chars": _READ_MAX},
     )
+    @tool_result
     def pipeline_next_phases(
         skip_phases: list[str] | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, Any] = {}
+        if skip_phases is not None:
+            args["skip_phases"] = skip_phases
+        return handle_next_phases(args, lifecycle_ctx)
 
     @mcp.tool(
         name="pipeline_start_phase",
@@ -1358,10 +1522,12 @@ def register_lifecycle_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(destructiveHint=True),
         meta={"max_result_chars": _MUTATE_MAX},
     )
+    @tool_result
     def pipeline_start_phase(
         phase: str,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, Any] = {"phase": phase}
+        return handle_start_phase(args, lifecycle_ctx)
 
     @mcp.tool(
         name="pipeline_complete_phase",
@@ -1369,10 +1535,12 @@ def register_lifecycle_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(destructiveHint=True),
         meta={"max_result_chars": _MUTATE_MAX},
     )
+    @tool_result
     def pipeline_complete_phase(
         phase: str,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, Any] = {"phase": phase}
+        return handle_complete_phase(args, lifecycle_ctx)
 
     @mcp.tool(
         name="pipeline_fail_phase",
@@ -1380,11 +1548,13 @@ def register_lifecycle_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(destructiveHint=True),
         meta={"max_result_chars": _MUTATE_MAX},
     )
+    @tool_result
     def pipeline_fail_phase(
         phase: str,
         error: str,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, Any] = {"phase": phase, "error": error}
+        return handle_fail_phase(args, lifecycle_ctx)
 
     @mcp.tool(
         name="pipeline_retry_phase",
@@ -1395,10 +1565,12 @@ def register_lifecycle_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(destructiveHint=True),
         meta={"max_result_chars": _MUTATE_MAX},
     )
+    @tool_result
     def pipeline_retry_phase(
         phase: str,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, Any] = {"phase": phase}
+        return handle_retry_phase(args, lifecycle_ctx)
 
     @mcp.tool(
         name="pipeline_run_status",
@@ -1409,8 +1581,9 @@ def register_lifecycle_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(readOnlyHint=True),
         meta={"max_result_chars": _READ_MAX},
     )
-    def pipeline_run_status() -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    @tool_result
+    def pipeline_run_status() -> HandlerResponse:
+        return handle_run_status(lifecycle_ctx)
 
     @mcp.tool(
         name="pipeline_reload_state",
@@ -1421,8 +1594,9 @@ def register_lifecycle_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(readOnlyHint=True),
         meta={"max_result_chars": _READ_MAX},
     )
-    def pipeline_reload_state() -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    @tool_result
+    def pipeline_reload_state() -> HandlerResponse:
+        return handle_reload_state(lifecycle_ctx)
 
     @mcp.tool(
         name="pipeline_phase_handoff",
@@ -1437,8 +1611,9 @@ def register_lifecycle_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
         meta={"max_result_chars": _READ_MAX},
     )
-    def pipeline_phase_handoff() -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    @tool_result
+    def pipeline_phase_handoff() -> HandlerResponse:
+        return handle_phase_handoff(lifecycle_ctx)
 
     @mcp.tool(
         name="pipeline_phase_brief",
@@ -1452,7 +1627,9 @@ def register_lifecycle_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(readOnlyHint=True),
         meta={"max_result_chars": _READ_MAX},
     )
+    @tool_result
     def pipeline_phase_brief(
         phase: str,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, Any] = {"phase": phase}
+        return handle_phase_brief(args, lifecycle_ctx)

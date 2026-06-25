@@ -68,7 +68,9 @@ from typing import TYPE_CHECKING, Any
 
 from mcp.types import ToolAnnotations
 
+from pipeline_orchestrator import validator
 from pipeline_orchestrator.models import HandlerResponse, RunState
+from pipeline_orchestrator.tools._envelope import tool_result
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -593,9 +595,28 @@ def register_misc_tools(mcp: FastMCP) -> None:
     the global seam later (T6.5) -- this function only makes the tools enumerate
     correctly on ``tools/list``.
 
-    NOT called from ``tools/__init__.py`` yet: the global ``register_tools``
-    handshake stays at 0 tools until the wiring task.
+    Wired into ``tools/__init__.py``: the global ``register_tools`` seam fans
+    out to this registrar so the tools dispatch through their handlers (T6.7).
     """
+    from pipeline_orchestrator.server import state
+
+    ingest_ctx = IngestContext(
+        validate_artifact=validator.validate_artifact,
+        get_schemas=state.schemas,
+        base_dir_from_run_dir=state.base_dir_from_run_dir,
+        get_project_root=state.project_root,
+        get_config_storage_base_dir=lambda: state.config_storage_base_dir(),
+        get_active_run=lambda: state.active_run,
+        get_active_run_dir=lambda: state.active_run_dir,
+    )
+    validate_run_ctx = ValidateRunContext(
+        require_run=state.require_run,
+        get_storage_config=state.get_storage_config,
+        base_dir_from_run_dir=state.base_dir_from_run_dir,
+        get_active_run_dir=lambda: state.active_run_dir,
+    )
+    web_search_ctx = WebSearchContext()
+
 
     @mcp.tool(
         name="pipeline_ingest_documents",
@@ -610,13 +631,21 @@ def register_misc_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(destructiveHint=True),
         meta={"max_result_chars": _MUTATE_MAX},
     )
+    @tool_result
     async def pipeline_ingest_documents(
         file_paths: list[str],
         ingest_name: str | None = None,
         validate: bool | None = None,
         json_items_key: str | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, Any] = {"file_paths": file_paths}
+        if ingest_name is not None:
+            args["ingest_name"] = ingest_name
+        if validate is not None:
+            args["validate"] = validate
+        if json_items_key is not None:
+            args["json_items_key"] = json_items_key
+        return await handle_ingest_documents(args, ingest_ctx)
 
     @mcp.tool(
         name="pipeline_analyze_codebase",
@@ -627,10 +656,12 @@ def register_misc_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(destructiveHint=True),
         meta={"max_result_chars": _MUTATE_MAX},
     )
+    @tool_result
     def pipeline_analyze_codebase(
         codebase_path: str,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, Any] = {"codebase_path": codebase_path}
+        return handle_analyze_codebase(args)
 
     @mcp.tool(
         name="pipeline_validate_run",
@@ -643,10 +674,14 @@ def register_misc_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(readOnlyHint=True),
         meta={"max_result_chars": _READ_MAX},
     )
+    @tool_result
     def pipeline_validate_run(
         phase_output_overrides: dict[str, list[str]] | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, Any] = {}
+        if phase_output_overrides is not None:
+            args["phase_output_overrides"] = phase_output_overrides
+        return handle_validate_run(args, validate_run_ctx)
 
     @mcp.tool(
         name="pipeline_feature_request",
@@ -660,6 +695,7 @@ def register_misc_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(destructiveHint=True),
         meta={"max_result_chars": _MUTATE_MAX},
     )
+    @tool_result
     def pipeline_feature_request(
         target_directory: str,
         title: str,
@@ -668,8 +704,18 @@ def register_misc_tools(mcp: FastMCP) -> None:
         scope: str,
         rationale: str,
         source: str | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, Any] = {
+            "target_directory": target_directory,
+            "title": title,
+            "description": description,
+            "priority": priority,
+            "scope": scope,
+            "rationale": rationale,
+        }
+        if source is not None:
+            args["source"] = source
+        return handle_feature_request(args)
 
     @mcp.tool(
         name="pipeline_web_search",
@@ -684,12 +730,20 @@ def register_misc_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(destructiveHint=True),
         meta={"max_result_chars": _MUTATE_MAX},
     )
+    @tool_result
     async def pipeline_web_search(
         collection_path: str,
         queries: list[str] | None = None,
         max_results_per_query: float | None = None,
         fetch_urls: list[str] | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, Any] = {"collection_path": collection_path}
+        if queries is not None:
+            args["queries"] = queries
+        if max_results_per_query is not None:
+            args["max_results_per_query"] = max_results_per_query
+        if fetch_urls is not None:
+            args["fetch_urls"] = fetch_urls
+        return await handle_web_search(args, web_search_ctx)
 
 

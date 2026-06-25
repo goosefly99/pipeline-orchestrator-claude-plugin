@@ -32,15 +32,18 @@ from __future__ import annotations
 import base64
 import json
 import math
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from mcp.types import ToolAnnotations
 
+from pipeline_orchestrator import collections_store, concepts
 from pipeline_orchestrator.bm25 import BM25Index, bm25_index_dir
 from pipeline_orchestrator.collections_store import ResearchItem
 from pipeline_orchestrator.models import HandlerResponse, KnowledgeOverview
+from pipeline_orchestrator.tools._envelope import tool_result
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -472,7 +475,7 @@ def handle_cc_get_overview(args: dict[str, object], ctx: CCContext) -> HandlerRe
     )
 
 
-# ── Tool registration (NOT wired into the global seam yet — T6.5) ────
+# ── Tool registration (wired into the global register_tools seam) ───
 
 _READ_MAX = 50000
 _MUTATE_MAX = 10000
@@ -488,21 +491,66 @@ def register_cc_tools(mcp: FastMCP) -> None:
     context is wired by the global seam later (T6.5) — this function only makes
     the tools enumerate correctly on ``tools/list``.
 
-    NOT called from ``tools/__init__.py`` yet: the global ``register_tools``
-    handshake stays at 0 tools until the wiring task.
+    Wired into ``tools/__init__.py``: the global ``register_tools`` seam fans
+    out to this registrar so the tools dispatch through their handlers (T6.7).
     """
+
+    from pipeline_orchestrator.server import state  # noqa: PLC0415
+
+    def _get_base_dir() -> str | None:
+        try:
+            return os.path.realpath(
+                os.path.join(state.project_root(), state.config_storage_base_dir())
+            )
+        except Exception:  # noqa: BLE001 — legacy ccCtx.getBaseDir try/catch
+            return None
+
+    def _persist_overview(
+        overview: KnowledgeOverview, output_dir_override: str | None = None
+    ) -> str:
+        legacy_base_dir = (
+            state.base_dir_from_run_dir(state.active_run_dir)
+            if state.active_run is not None
+            else os.path.realpath(
+                os.path.join(state.project_root(), state.config_storage_base_dir())
+            )
+        )
+        run_data_dir = (
+            state.active_run.run_data_dir if state.active_run is not None else None
+        )
+        return concepts.persist_overview(
+            run_data_dir, legacy_base_dir, overview, output_dir_override
+        )
+
+    cc_ctx = CCContext(
+        load_collection=collections_store.load_collection,
+        query_items=collections_store.query_items,
+        get_items=collections_store.get_items,
+        collect_concepts=concepts.collect_concepts,
+        save_overview=concepts.save_overview,
+        list_overviews=concepts.list_overviews,
+        get_overview=concepts.get_overview,
+        persist_overview=_persist_overview,
+        get_base_dir=_get_base_dir,
+    )
 
     @mcp.tool(
         name="pipeline_cc_load_collection",
         description="Load a research collection from a JSON file into the store.",
         meta={"max_result_chars": _MUTATE_MAX},
     )
+    @tool_result
     def pipeline_cc_load_collection(
         file_path: str,
         name: str | None = None,
         field_overrides: dict[str, str] | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, object] = {"file_path": file_path}
+        if name is not None:
+            args["name"] = name
+        if field_overrides is not None:
+            args["field_overrides"] = field_overrides
+        return handle_cc_load_collection(args, cc_ctx)
 
     @mcp.tool(
         name="pipeline_cc_query",
@@ -510,14 +558,26 @@ def register_cc_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(readOnlyHint=True),
         meta={"max_result_chars": _READ_MAX},
     )
+    @tool_result
     def pipeline_cc_query(
         collection: str | None = None,
         tags: list[str] | None = None,
         search: str | None = None,
         fields: dict[str, str] | None = None,
         limit: int | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, object] = {}
+        if collection is not None:
+            args["collection"] = collection
+        if tags is not None:
+            args["tags"] = tags
+        if search is not None:
+            args["search"] = search
+        if fields is not None:
+            args["fields"] = fields
+        if limit is not None:
+            args["limit"] = limit
+        return handle_cc_query(args, cc_ctx)
 
     @mcp.tool(
         name="pipeline_cc_get_items",
@@ -525,13 +585,22 @@ def register_cc_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(readOnlyHint=True),
         meta={"max_result_chars": _READ_MAX},
     )
+    @tool_result
     def pipeline_cc_get_items(
         collection: str,
         item_ids: list[str],
         full: bool | None = None,
         max_content_length: int | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, object] = {
+            "collection": collection,
+            "item_ids": item_ids,
+        }
+        if full is not None:
+            args["full"] = full
+        if max_content_length is not None:
+            args["max_content_length"] = max_content_length
+        return handle_cc_get_items(args, cc_ctx)
 
     @mcp.tool(
         name="pipeline_cc_collect_concepts",
@@ -539,6 +608,7 @@ def register_cc_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(destructiveHint=True),
         meta={"max_result_chars": _MUTATE_MAX},
     )
+    @tool_result
     async def pipeline_cc_collect_concepts(
         title: str,
         items: list[dict[str, object]],
@@ -547,8 +617,19 @@ def register_cc_tools(mcp: FastMCP) -> None:
         chunk_index: int | None = None,
         continuation_token: str | None = None,
         top_k: int | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, object] = {"title": title, "items": items}
+        if focus is not None:
+            args["focus"] = focus
+        if depth is not None:
+            args["depth"] = depth
+        if chunk_index is not None:
+            args["chunk_index"] = chunk_index
+        if continuation_token is not None:
+            args["continuation_token"] = continuation_token
+        if top_k is not None:
+            args["top_k"] = top_k
+        return await handle_cc_collect_concepts(args, cc_ctx)
 
     @mcp.tool(
         name="pipeline_cc_save_overview",
@@ -556,11 +637,15 @@ def register_cc_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(destructiveHint=True),
         meta={"max_result_chars": _MUTATE_MAX},
     )
+    @tool_result
     def pipeline_cc_save_overview(
         overview: dict[str, object],
         output_dir: str | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, object] = {"overview": overview}
+        if output_dir is not None:
+            args["output_dir"] = output_dir
+        return handle_cc_save_overview(args, cc_ctx)
 
     @mcp.tool(
         name="pipeline_cc_list_overviews",
@@ -568,10 +653,14 @@ def register_cc_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(readOnlyHint=True),
         meta={"max_result_chars": _READ_MAX},
     )
+    @tool_result
     def pipeline_cc_list_overviews(
         directory: str | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, object] = {}
+        if directory is not None:
+            args["directory"] = directory
+        return handle_cc_list_overviews(args, cc_ctx)
 
     @mcp.tool(
         name="pipeline_cc_get_overview",
@@ -579,8 +668,12 @@ def register_cc_tools(mcp: FastMCP) -> None:
         annotations=ToolAnnotations(readOnlyHint=True),
         meta={"max_result_chars": _READ_MAX},
     )
+    @tool_result
     def pipeline_cc_get_overview(
         overview_id: str,
         directory: str | None = None,
-    ) -> str:
-        raise NotImplementedError("wired by the global register_tools seam (T6.5)")
+    ) -> HandlerResponse:
+        args: dict[str, object] = {"overview_id": overview_id}
+        if directory is not None:
+            args["directory"] = directory
+        return handle_cc_get_overview(args, cc_ctx)
