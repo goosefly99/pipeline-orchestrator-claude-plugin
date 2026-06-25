@@ -1,6 +1,8 @@
 node_modules/
 legacy-node/hooks/runtime-config.json
 legacy-node/hooks/hook-logs/
+hooks/runtime-config.json
+hooks/hook-logs/
 pipeline_mcp_data/
 
 # Python (pure-Python FastMCP port — added in T0.1)

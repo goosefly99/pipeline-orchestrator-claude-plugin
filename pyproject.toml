@@ -31,7 +31,7 @@ packages = ["src/pipeline_orchestrator"]
 [tool.mypy]
 strict = true
 python_version = "3.11"
-files = ["src", "tests"]
+files = ["src", "tests", "hooks"]
 
 [[tool.mypy.overrides]]
 module = ["pypdf.*", "jsonschema.*"]
@@ -39,7 +39,7 @@ ignore_missing_imports = true
 
 [tool.ruff]
 target-version = "py311"
-src = ["src", "tests"]
+src = ["src", "tests", "hooks"]
 # The legacy-node/ Node tree (incl. its start.py + test_start_py.py) is out of
 # the pure-Python port surface and excluded from the gate.
 extend-exclude = ["legacy-node"]
@@ -48,4 +48,4 @@ extend-exclude = ["legacy-node"]
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "hooks/tests"]

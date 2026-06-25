@@ -1,0 +1,8 @@
+{
+  "event": "PreToolUse",
+  "tool_name": "Read",
+  "tool_input": {
+    "file_path": "/project/specs/v0.3.0-design.json"
+  },
+  "session_id": "test-session-001"
+}
