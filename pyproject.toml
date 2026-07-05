@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pipeline-orchestrator"
-version = "1.0.0"
+version = "1.0.1"
 description = "Pipeline orchestrator MCP server — reads pipeline.toml, resolves the typed DAG, validates artifacts, manages run state, and coordinates research/debate/synth phases"
 requires-python = ">=3.11"
 authors = [{ name = "olive" }]
@@ -24,6 +24,12 @@ dev = [
     "mypy",
     "ruff",
 ]
+
+[tool.uv]
+# Runtime `uv run` must NOT sync the dev group (pytest/mypy/ruff): doing so
+# rebuilds the venv and re-downloads dev tools on every MCP launch, blowing the
+# 30s MCP startup timeout. Empty default-groups => `uv run` syncs prod deps only.
+default-groups = []
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pipeline_orchestrator"]
