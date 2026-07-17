@@ -120,6 +120,47 @@ def _resolve_base_dir(ctx: KBContext) -> str:
     )
 
 
+# ── BM25 loaded-index cache ──────────────────────────────────────────
+#
+# ``handle_kb_search`` used to re-read every collection's full ``index.json``
+# from disk on every call. Loaded ``BM25Index`` objects are cached keyed by
+# index dir and invalidated by the index file's ``(st_mtime_ns, st_size)``
+# signature, so a ``pipeline_kb_build_index`` rebuild is picked up on the next
+# search. Results stay byte-identical: the cached object holds exactly what
+# ``load_index`` would re-read, and ``search`` never mutates it. FIFO-capped
+# so the cache itself stays bounded.
+
+_BM25_CACHE_MAX = 32
+
+_bm25_cache: dict[str, tuple[tuple[int, int], BM25Index]] = {}
+
+
+def _load_bm25_index(index_dir: str) -> BM25Index | None:
+    """Return the loaded index for ``index_dir``, or ``None`` when not built.
+
+    ``None`` on a failed ``os.stat`` mirrors the old ``is_built`` existence
+    check (``os.path.exists`` also swallows OSError). A cache hit requires the
+    ``index.json`` (mtime_ns, size) signature to be unchanged; a rebuild
+    rewrites the file and misses.
+    """
+    index_file = os.path.join(index_dir, "index.json")
+    try:
+        stat = os.stat(index_file)
+    except OSError:
+        return None
+    signature = (stat.st_mtime_ns, stat.st_size)
+    cached = _bm25_cache.get(index_dir)
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+    idx = BM25Index()
+    idx.load_index(index_dir)
+    _bm25_cache.pop(index_dir, None)
+    while len(_bm25_cache) >= _BM25_CACHE_MAX:
+        del _bm25_cache[next(iter(_bm25_cache))]
+    _bm25_cache[index_dir] = (signature, idx)
+    return idx
+
+
 # ── Handlers ─────────────────────────────────────────────────────────
 
 
@@ -205,10 +246,9 @@ async def handle_kb_search(
     all_hits: list[tuple[SearchHit, str]] = []
     for collection_name in collections:
         index_dir = bm25_index_dir(base_dir, collection_name)
-        idx = BM25Index()
-        if not idx.is_built(index_dir):
+        idx = _load_bm25_index(index_dir)
+        if idx is None:
             continue
-        idx.load_index(index_dir)
         hits = idx.search(query, top_k, filter_tags)
         for hit in hits:
             all_hits.append((hit, collection_name))

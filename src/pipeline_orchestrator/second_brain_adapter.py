@@ -26,16 +26,24 @@ Parity notes:
   ``sql_query`` would be required under mypy --strict). Wiring it into the
   registry is a later task's concern.
 * **Non-throwing default runner.** :func:`default_run_cli` never raises out:
-  ``subprocess`` failures (timeout / missing venv / OS error) are mapped to a
-  non-zero ``code`` so ``vector_search`` can branch on it.
+  subprocess failures (timeout / missing venv / OS error) are mapped to a
+  non-zero ``code`` so ``vector_search`` can branch on it. It spawns via
+  ``asyncio.create_subprocess_exec`` so the server's event loop is never
+  blocked while the CLI runs.
+* **Status handshake cached per adapter lifetime.** The ``status --json``
+  probe result cannot change mid-process (same venv, same store), so a
+  successful probe is cached on the adapter instance and each subsequent query
+  costs ONE spawn instead of two. Failed probes (non-zero exit / unparseable /
+  not enabled) are never cached, keeping every error path retryable and
+  byte-identical; the env-vs-status handshake checks still run on every call.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
-import subprocess
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -74,28 +82,39 @@ async def default_run_cli(args: list[str], timeout_ms: int) -> RunCliResult:
     ``-m second_brain.cli`` module entrypoint, non-throwing on non-zero exit so
     the adapter can branch on ``code``.
 
-    Never raises out — a timeout / missing venv / OS error maps to a non-zero
-    ``code`` with whatever stdout/stderr was captured (empty on spawn failure).
+    Spawns via ``asyncio.create_subprocess_exec`` so the server's event loop is
+    never blocked while the CLI runs (a sync ``subprocess.run`` here stalled
+    every other in-flight request for up to the full timeout). Never raises out
+    — a timeout / missing venv / OS error maps to a non-zero ``code`` with
+    whatever stdout/stderr was captured (empty on spawn failure / timeout).
     """
     py = os.environ.get("SECOND_BRAIN_PYTHON", "/opt/second-brain/bin/python")
     try:
-        proc = subprocess.run(
-            [py, "-m", "second_brain.cli", *args],
+        proc = await asyncio.create_subprocess_exec(
+            py,
+            "-m",
+            "second_brain.cli",
+            *args,
             env={**os.environ, **HYGIENE_ENV},
-            capture_output=True,
-            text=True,
-            timeout=timeout_ms / 1000,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as err:
-        return RunCliResult(
-            code=1,
-            stdout=err.stdout or "" if isinstance(err.stdout, str) else "",
-            stderr=err.stderr or "" if isinstance(err.stderr, str) else "",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
     except (FileNotFoundError, OSError):
         return RunCliResult(code=1, stdout="", stderr="")
-    return RunCliResult(code=proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
+    try:
+        stdout_b, stderr_b = await asyncio.wait_for(
+            proc.communicate(), timeout=timeout_ms / 1000
+        )
+    except TimeoutError:
+        # Same mapping as the old subprocess.TimeoutExpired branch: code=1.
+        proc.kill()
+        await proc.wait()
+        return RunCliResult(code=1, stdout="", stderr="")
+    return RunCliResult(
+        code=proc.returncode if proc.returncode is not None else 1,
+        stdout=stdout_b.decode("utf-8", errors="replace"),
+        stderr=stderr_b.decode("utf-8", errors="replace"),
+    )
 
 
 # ── Internal helpers ──────────────────────────────────────────
@@ -152,7 +171,10 @@ class SecondBrainAdapter:
     """The ``vector:second_brain`` provider adapter.
 
     Implements only ``vector_search`` (the TS object literal implements only
-    ``vectorSearch``); it deliberately has no ``sql_query`` method.
+    ``vectorSearch``); it deliberately has no ``sql_query`` method. A
+    successful ``status --json`` probe is cached for the adapter's lifetime
+    (the store identity cannot change mid-process), so each query after the
+    first costs one spawn, not two; failed probes are never cached.
     """
 
     type = "vector"
@@ -160,6 +182,7 @@ class SecondBrainAdapter:
 
     def __init__(self, run_cli: RunCli) -> None:
         self._run_cli = run_cli
+        self._status_cache: dict[str, object] | None = None
 
     async def vector_search(
         self, client: KBClient, params: VectorSearchParams
@@ -170,15 +193,26 @@ class SecondBrainAdapter:
             if not index_path:
                 return _not_configured("SECOND_BRAIN_INDEX_PATH unset")
 
-            # (b) Read-only status probe.
-            status_run = await self._run_cli(["status", "--json"], STATUS_TIMEOUT_MS)
-            if status_run.code != 0:
-                return _not_configured(f"second_brain status exited {status_run.code}")
-            status = parse_json_line(status_run.stdout)
+            # (b) Read-only status probe — cached after the first success.
+            # Failure paths (non-zero exit / unparseable / not enabled) return
+            # before the cache is written, so they retry on the next call and
+            # stay byte-identical. A benign await-interleave race can double-
+            # probe once; both writes carry the same value.
+            status = self._status_cache
             if status is None:
-                return _not_configured("second_brain status: unparseable stdout")
-            if status.get("enabled") is not True:
-                return _not_configured("second_brain store not enabled")
+                status_run = await self._run_cli(
+                    ["status", "--json"], STATUS_TIMEOUT_MS
+                )
+                if status_run.code != 0:
+                    return _not_configured(
+                        f"second_brain status exited {status_run.code}"
+                    )
+                status = parse_json_line(status_run.stdout)
+                if status is None:
+                    return _not_configured("second_brain status: unparseable stdout")
+                if status.get("enabled") is not True:
+                    return _not_configured("second_brain store not enabled")
+                self._status_cache = status
 
             # (c) Handshake (invariant #5) — byte-equality before any query.
             if status.get("index_path") != index_path:

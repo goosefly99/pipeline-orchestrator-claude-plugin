@@ -94,6 +94,40 @@ class ResearchCollection:
 STORE: dict[str, ResearchCollection] = {}
 
 
+def _store_max_items() -> int | None:
+    """Opt-in STORE cap: ``PIPELINE_MCP_STORE_MAX_ITEMS`` (total normalized
+    items across all loaded collections).
+
+    Unset / unparseable / ``<= 0`` → ``None`` (unlimited — the byte-exact
+    legacy behavior). Read from ``os.environ`` on every call (the ``@cache``'d
+    ``config.py`` readers would go stale when tests toggle the env per-test).
+    """
+    raw = os.environ.get("PIPELINE_MCP_STORE_MAX_ITEMS")
+    if not raw:
+        return None
+    try:
+        cap = int(raw)
+    except ValueError:
+        return None
+    return cap if cap > 0 else None
+
+
+def _evict_over_cap(max_items: int, keep: str) -> None:
+    """FIFO-evict whole oldest-loaded collections until :data:`STORE` holds at
+    most ``max_items`` items in total.
+
+    ``keep`` (the just-loaded collection) is never evicted, so it survives even
+    when it alone exceeds the cap.
+    """
+    total = sum(len(c.items) for c in STORE.values())
+    while total > max_items:
+        oldest = next(iter(STORE))
+        if oldest == keep:
+            break
+        total -= len(STORE[oldest].items)
+        del STORE[oldest]
+
+
 # ── Candidate lists for auto-detection (ported VERBATIM, same order) ─
 
 ID_CANDIDATES = ["id", "tweet_id", "post_id", "article_id", "item_id", "uid", "key"]
@@ -379,7 +413,18 @@ def load_collection(
         available_tags=sorted(tag_set),
     )
 
-    STORE[collection_name] = collection
+    max_items = _store_max_items()
+    if max_items is None:
+        # Knob unset → byte-exact legacy behavior (a reload keeps the
+        # collection's original insertion position in the shared dict).
+        STORE[collection_name] = collection
+    else:
+        # Opt-in cap: a reload moves the collection to the back of the FIFO
+        # eviction queue, then whole oldest-loaded collections are evicted
+        # while the total item count exceeds the cap.
+        STORE.pop(collection_name, None)
+        STORE[collection_name] = collection
+        _evict_over_cap(max_items, keep=collection_name)
     return collection
 
 

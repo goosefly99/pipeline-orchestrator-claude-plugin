@@ -51,6 +51,7 @@ Parity notes:
 
 from __future__ import annotations
 
+import os
 from typing import Literal, Protocol, TypedDict, runtime_checkable
 
 from .ingest import _now_iso
@@ -188,6 +189,48 @@ _adapter_registry: dict[str, KBProviderAdapter] = {}
 # ── Internal helpers ─────────────────────────────────────────
 
 
+def _query_log_max_entries() -> int | None:
+    """Opt-in per-run query-log cap: ``PIPELINE_MCP_QUERY_LOG_MAX_ENTRIES``.
+
+    Unset / unparseable / ``<= 0`` → ``None`` (unlimited — the byte-exact
+    legacy behavior). Read from ``os.environ`` on every call (module idiom:
+    direct env reads so per-test toggles are observed).
+    """
+    raw = os.environ.get("PIPELINE_MCP_QUERY_LOG_MAX_ENTRIES")
+    if not raw:
+        return None
+    try:
+        cap = int(raw)
+    except ValueError:
+        return None
+    return cap if cap > 0 else None
+
+
+def _evict_run_entries(
+    run_id: str, run_entries: list[KBQueryLogEntry], cap: int
+) -> None:
+    """FIFO-evict ``run_entries`` down to ``cap``, removing each evicted entry
+    (by identity — the same object is shared) from its phase-index list too.
+    """
+    prefix = f"{run_id}:"
+    while len(run_entries) > cap:
+        evicted = run_entries.pop(0)
+        for key, entries in list(_phase_index.items()):
+            if not key.startswith(prefix):
+                continue
+            for i, e in enumerate(entries):
+                if e is evicted:
+                    del entries[i]
+                    break
+            else:
+                continue
+            if not entries:
+                # ``get_query_log`` returns ``[]`` for a missing key, so
+                # dropping an emptied list is observably identical.
+                del _phase_index[key]
+            break
+
+
 def _append_entry(run_id: str, phase: str, entry: KBQueryLogEntry) -> None:
     """Append ``entry`` to both the run-level store and the phase index.
 
@@ -208,6 +251,13 @@ def _append_entry(run_id: str, phase: str, entry: KBQueryLogEntry) -> None:
         phase_entries = []
         _phase_index[phase_key] = phase_entries
     phase_entries.append(entry)
+
+    # Opt-in FIFO cap (PIPELINE_MCP_QUERY_LOG_MAX_ENTRIES): evict this run's
+    # oldest entries — from BOTH stores — once the run exceeds the cap. Unset
+    # → unlimited (byte-exact legacy behavior).
+    cap = _query_log_max_entries()
+    if cap is not None and len(run_entries) > cap:
+        _evict_run_entries(run_id, run_entries, cap)
 
 
 def append_search_entry(

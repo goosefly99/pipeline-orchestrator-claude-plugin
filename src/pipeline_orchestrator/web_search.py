@@ -56,6 +56,29 @@ from .ingest import _now_iso, strip_html_tags
 FETCH_TIMEOUT_MS = 10_000
 _FETCH_TIMEOUT_S = FETCH_TIMEOUT_MS / 1000.0
 
+#: Default cap on fetched page content (2 MiB). Override via
+#: ``PIPELINE_MCP_FETCH_MAX_BYTES``; ``<= 0`` disables the cap.
+DEFAULT_FETCH_MAX_BYTES = 2_097_152
+
+
+def _fetch_max_bytes() -> int:
+    """Resolve the fetch/content cap from ``PIPELINE_MCP_FETCH_MAX_BYTES``.
+
+    Unset / unparseable → :data:`DEFAULT_FETCH_MAX_BYTES`; ``<= 0`` → ``0``
+    (no cap). Read from ``os.environ`` on every call (module idiom — tests
+    toggle the env per-test, cf. ``PIPELINE_SEARCH_API`` above).
+    """
+    import os
+
+    raw = os.environ.get("PIPELINE_MCP_FETCH_MAX_BYTES")
+    if not raw:
+        return DEFAULT_FETCH_MAX_BYTES
+    try:
+        cap = int(raw)
+    except ValueError:
+        return DEFAULT_FETCH_MAX_BYTES
+    return cap if cap > 0 else 0
+
 
 # ── HTTP layer (mockable) ────────────────────────────────────
 
@@ -79,10 +102,26 @@ async def _http_get_text(url: str, headers: dict[str, str]) -> tuple[int, str]:
     """GET ``url`` and return ``(status_code, body_text)``.
 
     Mirrors the TS ``fetch(...).text()`` path; isolated for monkeypatching.
+    Streams the body and stops reading past the ``PIPELINE_MCP_FETCH_MAX_BYTES``
+    cap (default 2 MiB) so a pathological page cannot exhaust memory. Pages
+    under the cap decode identically to the previous ``resp.text`` (same
+    encoding resolution, same ``errors="replace"``).
     """
+    max_bytes = _fetch_max_bytes()
     async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT_S) as client:
-        resp = await client.get(url, headers=headers)
-        return resp.status_code, resp.text
+        async with client.stream("GET", url, headers=headers) as resp:
+            chunks: list[bytes] = []
+            received = 0
+            async for chunk in resp.aiter_bytes():
+                chunks.append(chunk)
+                received += len(chunk)
+                if max_bytes and received >= max_bytes:
+                    break
+            body = b"".join(chunks)
+            if max_bytes:
+                body = body[:max_bytes]
+            encoding = resp.encoding or "utf-8"
+            return resp.status_code, body.decode(encoding, errors="replace")
 
 
 # ── Search ───────────────────────────────────────────────────
@@ -205,6 +244,7 @@ async def fetch_and_extract(urls: list[str]) -> list[dict[str, object]]:
     abort the batch — mirrors the TS per-URL try/catch.
     """
     results: list[dict[str, object]] = []
+    max_bytes = _fetch_max_bytes()
 
     for url in urls:
         try:
@@ -213,15 +253,24 @@ async def fetch_and_extract(urls: list[str]) -> list[dict[str, object]]:
             )
             title = _extract_html_title(html)
             content = strip_html_tags(html)
-            results.append(
-                {
-                    "url": url,
-                    "title": title or url,
-                    "content": content,
-                    "status": status,
-                    "content_length": len(content),
-                }
-            )
+            # ponytail: the stored-content cap counts characters against the
+            # byte knob (chars <= raw bytes for the ASCII-dominated HTML this
+            # guards against); exact byte accounting isn't worth the slicing.
+            truncated = bool(max_bytes) and len(content) > max_bytes
+            if truncated:
+                content = content[:max_bytes]
+            result: dict[str, object] = {
+                "url": url,
+                "title": title or url,
+                "content": content,
+                "status": status,
+                "content_length": len(content),
+            }
+            # Undefined-key-drop: the key appears ONLY when the cap fired, so
+            # sub-cap pages keep the frozen shape byte-identically.
+            if truncated:
+                result["truncated"] = True
+            results.append(result)
         except Exception as err:
             results.append(
                 {
@@ -262,6 +311,17 @@ def _build_web_items(
         url = f["url"]
         assert isinstance(url, str)
 
+        metadata: dict[str, object] = {
+            "search_query": search_query if search_query is not None else "",
+            "search_snippet": search_snippets.get(url, ""),
+            "fetch_status": f["status"],
+            "content_length": f["content_length"],
+        }
+        # Undefined-key-drop: record truncation only when the fetch cap fired
+        # (sub-cap pages keep the frozen metadata shape byte-identically).
+        if f.get("truncated"):
+            metadata["truncated"] = True
+
         item: dict[str, object] = {
             "id": f"web_{secrets.token_hex(4)}",
             "source_type": "web",
@@ -271,12 +331,7 @@ def _build_web_items(
             "url": url,
             "date": now,
             "tags": [],
-            "metadata": {
-                "search_query": search_query if search_query is not None else "",
-                "search_snippet": search_snippets.get(url, ""),
-                "fetch_status": f["status"],
-                "content_length": f["content_length"],
-            },
+            "metadata": metadata,
         }
         items.append(item)
 
