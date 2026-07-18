@@ -256,6 +256,7 @@ async def fetch_and_extract(urls: list[str]) -> list[dict[str, object]]:
             # ponytail: the stored-content cap counts characters against the
             # byte knob (chars <= raw bytes for the ASCII-dominated HTML this
             # guards against); exact byte accounting isn't worth the slicing.
+            # Switch to byte-slicing if stored HTML ever goes multibyte-heavy.
             truncated = bool(max_bytes) and len(content) > max_bytes
             if truncated:
                 content = content[:max_bytes]
